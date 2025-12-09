@@ -1,135 +1,118 @@
-import apiClient, { MOCK_MODE } from './api';
-
-// Mock data
-const mockImages = [
-  {
-    id: 1,
-    filename: 'city_street.jpg',
-    url: 'https://images.unsplash.com/photo-1449824913935-59a10b8d2000?w=400',
-    uploadDate: '2025-12-01',
-    objectCount: 5,
-    detections: [
-      { id: 1, label: 'car', confidence: 0.95, bbox: [100, 150, 300, 400] },
-      { id: 2, label: 'person', confidence: 0.92, bbox: [50, 100, 150, 350] },
-      { id: 3, label: 'person', confidence: 0.88, bbox: [400, 120, 480, 380] },
-    ],
-  },
-  {
-    id: 2,
-    filename: 'beach_scene.jpg',
-    url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=400',
-    uploadDate: '2025-12-02',
-    objectCount: 3,
-    detections: [
-      { id: 4, label: 'person', confidence: 0.91, bbox: [200, 180, 280, 420] },
-      { id: 5, label: 'umbrella', confidence: 0.87, bbox: [150, 100, 250, 200] },
-    ],
-  },
-  {
-    id: 3,
-    filename: 'office_desk.jpg',
-    url: 'https://images.unsplash.com/photo-1484480974693-6ca0a78fb36b?w=400',
-    uploadDate: '2025-12-03',
-    objectCount: 4,
-    detections: [
-      { id: 6, label: 'laptop', confidence: 0.94, bbox: [150, 200, 450, 500] },
-      { id: 7, label: 'keyboard', confidence: 0.89, bbox: [180, 320, 420, 480] },
-    ],
-  },
-  {
-    id: 4,
-    filename: 'park_dogs.jpg',
-    url: 'https://images.unsplash.com/photo-1548199973-03cce0bbc87b?w=400',
-    uploadDate: '2025-12-04',
-    objectCount: 2,
-    detections: [
-      { id: 8, label: 'dog', confidence: 0.96, bbox: [100, 200, 300, 500] },
-      { id: 9, label: 'dog', confidence: 0.93, bbox: [350, 220, 550, 520] },
-    ],
-  },
-];
-
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+import apiClient from './api';
 
 // Image Service
 export const imageService = {
-  // Get all images
+  // Get all images with optional category filter and pagination
   async getImages(filters = {}) {
-    if (MOCK_MODE) {
-      await delay(500);
-      let filtered = [...mockImages];
-      
-      if (filters.search) {
-        filtered = filtered.filter(img => 
-          img.filename.toLowerCase().includes(filters.search.toLowerCase())
-        );
-      }
-      
+    try {
+      const queryParams = new URLSearchParams();
       if (filters.category) {
-        filtered = filtered.filter(img =>
-          img.detections?.some(d => d.label === filters.category)
-        );
+        queryParams.append('category', filters.category);
+      }
+      if (filters.page) {
+        queryParams.append('page', filters.page);
+      }
+      if (filters.limit) {
+        queryParams.append('limit', filters.limit);
       }
       
-      if (filters.hasDetections) {
-        filtered = filtered.filter(img => img.objectCount > 0);
-      }
+      const response = await apiClient.get(`/images?${queryParams}`);
       
-      return { images: filtered, total: filtered.length };
+      // Map response to include proper URLs from server
+      const images = response.images.map(img => ({
+        ...img,
+        id: img._id,
+        url: img.url,
+        filename: img.name || img.filename,
+        uploadDate: img.uploadedAt ? new Date(img.uploadedAt).toISOString().split('T')[0] : null,
+        objectCount: 0
+      }));
+      
+      return { 
+        images, 
+        total: response.total,
+        page: response.page,
+        totalPages: response.totalPages,
+        hasMore: response.hasMore
+      };
+    } catch (error) {
+      console.error('Failed to fetch images:', error);
+      return { images: [], total: 0, hasMore: false };
     }
-    
-    const queryParams = new URLSearchParams(filters).toString();
-    return apiClient.get(`/images?${queryParams}`);
   },
 
   // Get single image
   async getImage(id) {
-    if (MOCK_MODE) {
-      await delay(300);
-      const image = mockImages.find(img => img.id === parseInt(id));
-      if (!image) throw new Error('Image not found');
-      return image;
+    try {
+      const response = await apiClient.get(`/images/${id}`);
+      return {
+        ...response,
+        id: response._id,
+        url: response.url,
+        filename: response.name || response.filename,
+        uploadDate: response.uploadedAt ? new Date(response.uploadedAt).toISOString().split('T')[0] : null,
+        objectCount: 0
+      };
+    } catch (error) {
+      console.error('Failed to fetch image:', error);
+      throw error;
     }
-    
-    return apiClient.get(`/images/${id}`);
   },
 
-  // Upload images
-  async uploadImages(files, onProgress) {
-    if (MOCK_MODE) {
-      await delay(1500);
-      const newImages = Array.from(files).map((file, index) => ({
-        id: mockImages.length + index + 1,
-        filename: file.name,
-        url: URL.createObjectURL(file),
-        uploadDate: new Date().toISOString().split('T')[0],
-        objectCount: 0,
-        detections: [],
-      }));
-      mockImages.push(...newImages);
-      return { images: newImages, success: true };
+  // Upload single image
+  async uploadImage(file) {
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      
+      const response = await apiClient.upload('/images/upload', formData);
+      
+      return {
+        ...response.image,
+        id: response.image._id,
+        url: response.image.url,
+        filename: response.image.name || response.image.filename
+      };
+    } catch (error) {
+      console.error('Failed to upload image:', error);
+      throw error;
     }
-    
-    const formData = new FormData();
-    Array.from(files).forEach(file => {
-      formData.append('images', file);
-    });
-    
-    return apiClient.upload('/images/upload', formData);
   },
 
   // Delete image
   async deleteImage(id) {
-    if (MOCK_MODE) {
-      await delay(500);
-      const index = mockImages.findIndex(img => img.id === id);
-      if (index > -1) {
-        mockImages.splice(index, 1);
-      }
-      return { success: true };
+    try {
+      const response = await apiClient.delete(`/images/${id}`);
+      return response;
+    } catch (error) {
+      console.error('Failed to delete image:', error);
+      throw error;
     }
-    
-    return apiClient.delete(`/images/${id}`);
+  },
+
+  // Get category images (from images folder)
+  async getCategoryImages(page = 1, limit = 50) {
+    try {
+      const queryParams = new URLSearchParams({ page, limit });
+      const response = await apiClient.get(`/images/categories/list?${queryParams}`);
+      
+      const images = response.images.map(img => ({
+        ...img,
+        url: img.url,
+        filename: img.name,
+        id: img._id || img.path,
+        objectCount: 0
+      }));
+      
+      return {
+        images,
+        total: response.total,
+        hasMore: response.hasMore
+      };
+    } catch (error) {
+      console.error('Failed to fetch category images:', error);
+      return { images: [], total: 0, hasMore: false };
+    }
   },
 
   // Run object detection

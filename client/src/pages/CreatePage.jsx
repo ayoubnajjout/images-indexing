@@ -61,20 +61,29 @@ const CreatePage = () => {
   };
   
   const handleApply = async () => {
+    // Ask user for image name
+    const imageName = prompt('Enter a name for the transformed image:');
+    
+    if (!imageName || imageName.trim() === '') {
+      showToast('Please provide a name for the image', 'error');
+      return;
+    }
+    
     try {
       setApplying(true);
       showToast('Applying transformations...', 'info');
       
       const result = await transformService.applyTransformation(
         selectedImageId,
-        transformations
+        transformations,
+        imageName.trim()
       );
       
       showToast('Transformation applied successfully!', 'success');
       
-      // Redirect to the new image
+      // Redirect to collection page
       setTimeout(() => {
-        navigate(`/image/${result.newImageId}`);
+        navigate('/');
       }, 1500);
     } catch (error) {
       showToast('Failed to apply transformations', 'error');

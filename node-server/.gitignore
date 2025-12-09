@@ -1,0 +1,14 @@
+node_modules/
+.env
+npm-debug.log
+
+# S3 Storage - ignore all images
+S3/images/*
+S3/upload/*
+S3/edited/*
+
+# Keep the folder structure but ignore contents
+!S3/images/.gitkeep
+!S3/upload/.gitkeep
+!S3/edited/.gitkeep
+!S3/README.md

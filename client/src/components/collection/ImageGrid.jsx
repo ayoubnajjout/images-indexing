@@ -1,8 +1,9 @@
 import React from 'react';
 import ImageCard from './ImageCard';
 import { ImageCardSkeleton } from '../ui/SkeletonLoader';
+import Spinner from '../ui/Spinner';
 
-const ImageGrid = ({ images, loading, onDelete, onDetect }) => {
+const ImageGrid = ({ images, loading, onDelete, onDetect, lastImageRef, loadingMore }) => {
   if (loading) {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -28,16 +29,38 @@ const ImageGrid = ({ images, loading, onDelete, onDetect }) => {
   }
   
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-      {images.map((image) => (
-        <ImageCard
-          key={image.id}
-          image={image}
-          onDelete={onDelete}
-          onDetect={onDetect}
-        />
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        {images.map((image, index) => {
+          // Attach ref to the last image for pagination intersection observer
+          if (index === images.length - 1 && lastImageRef) {
+            return (
+              <div ref={lastImageRef} key={image.id}>
+                <ImageCard
+                  image={image}
+                  onDelete={onDelete}
+                  onDetect={onDetect}
+                />
+              </div>
+            );
+          }
+          return (
+            <ImageCard
+              key={image.id}
+              image={image}
+              onDelete={onDelete}
+              onDetect={onDetect}
+            />
+          );
+        })}
+      </div>
+      {loadingMore && (
+        <div className="flex justify-center items-center py-8">
+          <Spinner size="md" />
+          <span className="ml-3 text-slate-600">Loading more images...</span>
+        </div>
+      )}
+    </>
   );
 };
 

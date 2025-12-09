@@ -3,6 +3,8 @@ import { Card } from '../ui';
 
 const ImageViewer = ({ image, detections = [], selectedObjectId, onObjectSelect }) => {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
   const imageRef = useRef(null);
   const containerRef = useRef(null);
   
@@ -49,12 +51,31 @@ const ImageViewer = ({ image, detections = [], selectedObjectId, onObjectSelect 
   return (
     <Card className="overflow-hidden">
       <Card.Body className="p-0">
-        <div ref={containerRef} className="relative bg-slate-900">
+        <div ref={containerRef} className="relative bg-slate-900 min-h-[400px] flex items-center justify-center">
+          {!imageLoaded && !imageError && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white"></div>
+            </div>
+          )}
+          {imageError && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
+              <svg className="w-16 h-16 mb-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <p className="text-lg">Failed to load image</p>
+              <p className="text-sm text-slate-400 mt-2">{image.url}</p>
+            </div>
+          )}
           <img
             ref={imageRef}
             src={image.url}
             alt={image.filename}
-            className="w-full h-auto"
+            className={`w-full h-auto ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+            onLoad={() => setImageLoaded(true)}
+            onError={(e) => {
+              console.error('Image failed to load:', image.url);
+              setImageError(true);
+            }}
           />
           
           {/* Bounding Boxes Overlay */}

@@ -5,37 +5,49 @@ import { Button, Card, Spinner } from '../ui';
 const UploadPanel = ({ onUpload }) => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState([]);
+  const [warning, setWarning] = useState('');
   
   const onDrop = useCallback(async (acceptedFiles) => {
+    // Only allow single image upload
+    if (acceptedFiles.length > 1) {
+      setWarning('⚠️ Please upload only ONE image at a time');
+      setTimeout(() => setWarning(''), 3000);
+      return;
+    }
+
+    if (acceptedFiles.length === 0) {
+      return;
+    }
+
     setUploading(true);
+    setWarning('');
     
-    // Initialize progress tracking
-    const progressList = acceptedFiles.map((file) => ({
-      name: file.name,
+    // Initialize progress tracking for single file
+    const progressList = [{
+      name: acceptedFiles[0].name,
       progress: 0,
       status: 'uploading',
-    }));
+    }];
     setUploadProgress(progressList);
     
     try {
       // Simulate upload progress
-      for (let i = 0; i < acceptedFiles.length; i++) {
-        for (let p = 0; p <= 100; p += 20) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          setUploadProgress(prev => 
-            prev.map((item, index) => 
-              index === i ? { ...item, progress: p } : item
-            )
-          );
-        }
-        setUploadProgress(prev => 
-          prev.map((item, index) => 
-            index === i ? { ...item, status: 'complete' } : item
-          )
-        );
+      for (let p = 0; p <= 100; p += 20) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        setUploadProgress([{ 
+          name: acceptedFiles[0].name, 
+          progress: p, 
+          status: 'uploading' 
+        }]);
       }
       
-      await onUpload(acceptedFiles);
+      setUploadProgress([{ 
+        name: acceptedFiles[0].name, 
+        progress: 100, 
+        status: 'complete' 
+      }]);
+      
+      await onUpload(acceptedFiles[0]);
       
       // Clear progress after success
       setTimeout(() => {
@@ -44,9 +56,11 @@ const UploadPanel = ({ onUpload }) => {
       }, 1000);
     } catch (error) {
       console.error('Upload failed:', error);
-      setUploadProgress(prev => 
-        prev.map(item => ({ ...item, status: 'error' }))
-      );
+      setUploadProgress([{ 
+        name: acceptedFiles[0].name, 
+        progress: 0, 
+        status: 'error' 
+      }]);
       setUploading(false);
     }
   }, [onUpload]);
@@ -56,12 +70,20 @@ const UploadPanel = ({ onUpload }) => {
     accept: {
       'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp']
     },
-    multiple: true,
+    multiple: false,
+    maxFiles: 1,
   });
   
   return (
     <Card className="mb-6">
       <Card.Body>
+        {/* Warning Message */}
+        {warning && (
+          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm font-medium">
+            {warning}
+          </div>
+        )}
+        
         <div
           {...getRootProps()}
           className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition ${
@@ -79,9 +101,10 @@ const UploadPanel = ({ onUpload }) => {
             </div>
             <div>
               <p className="text-lg font-medium text-slate-700">
-                {isDragActive ? 'Drop files here' : 'Drag & drop images here'}
+                {isDragActive ? 'Drop file here' : 'Upload ONE image'}
               </p>
-              <p className="text-sm text-slate-500 mt-1">or click to browse</p>
+              <p className="text-sm text-slate-500 mt-1">Drag & drop or click to browse</p>
+              <p className="text-xs text-red-500 mt-2">⚠️ Only 1 image allowed per upload</p>
             </div>
             <Button variant="secondary" size="sm">
               Browse Files

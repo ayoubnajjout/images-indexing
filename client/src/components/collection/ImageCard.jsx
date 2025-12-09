@@ -1,9 +1,41 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, Badge, Button } from '../ui';
 
 const ImageCard = ({ image, onDelete, onDetect }) => {
   const navigate = useNavigate();
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isInView, setIsInView] = useState(false);
+  const imgRef = useRef(null);
+  
+  // Lazy load images using Intersection Observer
+  useEffect(() => {
+    const currentRef = imgRef.current;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setIsInView(true);
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      {
+        rootMargin: '50px'
+      }
+    );
+    
+    if (currentRef) {
+      observer.observe(currentRef);
+    }
+    
+    return () => {
+      if (currentRef) {
+        observer.unobserve(currentRef);
+      }
+      observer.disconnect();
+    };
+  }, []);
   
   const handleViewDetails = () => {
     navigate(`/image/${image.id}`);
@@ -22,12 +54,23 @@ const ImageCard = ({ image, onDelete, onDetect }) => {
   return (
     <Card className="overflow-hidden group">
       {/* Image */}
-      <div className="relative aspect-video overflow-hidden bg-slate-100">
-        <img
-          src={image.url}
-          alt={image.filename}
-          className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
-        />
+      <div ref={imgRef} className="relative aspect-video overflow-hidden bg-slate-100">
+        {!isLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          </div>
+        )}
+        {isInView && (
+          <img
+            src={image.url}
+            alt={image.filename}
+            className={`w-full h-full object-cover transition duration-300 group-hover:scale-105 ${
+              isLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
+            onLoad={() => setIsLoaded(true)}
+            loading="lazy"
+          />
+        )}
         
         {/* Overlay with actions (visible on hover) */}
         <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition duration-300 flex items-center justify-center opacity-0 group-hover:opacity-100">

@@ -2,7 +2,7 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 // Mock data for development
-const MOCK_MODE = import.meta.env.VITE_MOCK_API === 'true' || true;
+const MOCK_MODE = import.meta.env.VITE_MOCK_API === 'true' || false;
 
 // Helper function to simulate API delay
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
