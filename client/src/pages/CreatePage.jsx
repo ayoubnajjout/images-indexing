@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ImageTransformer, TransformControls } from '../components/transform';
-import { Button, Dropdown, Toast, Spinner } from '../components/ui';
+import { Button, Dropdown, Toast, Spinner, Badge } from '../components/ui';
 import { imageService, transformService } from '../services';
 
 const CreatePage = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   
   const [images, setImages] = useState([]);
-  const [selectedImageId, setSelectedImageId] = useState('');
+  const [selectedImageId, setSelectedImageId] = useState(searchParams.get('imageId') || '');
   const [selectedImage, setSelectedImage] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [transformations, setTransformations] = useState({
     scale: 100,
     rotate: 0,
@@ -31,10 +33,25 @@ const CreatePage = () => {
   
   const loadImages = async () => {
     try {
-      const response = await imageService.getImages();
-      setImages(response.images);
+      setLoading(true);
+      // Load all images from gallery (uploaded, edited, and categories)
+      const [uploadedRes, editedRes, categoriesRes] = await Promise.all([
+        imageService.getImages({ category: 'uploaded', limit: 100 }),
+        imageService.getImages({ category: 'edited', limit: 100 }),
+        imageService.getCategoryImages(1, 100)
+      ]);
+      
+      const allImages = [
+        ...uploadedRes.images.map(img => ({ ...img, source: 'uploaded' })),
+        ...editedRes.images.map(img => ({ ...img, source: 'edited' })),
+        ...categoriesRes.images.map(img => ({ ...img, source: 'gallery' }))
+      ];
+      
+      setImages(allImages);
     } catch (error) {
       showToast('Failed to load images', 'error');
+    } finally {
+      setLoading(false);
     }
   };
   
@@ -102,7 +119,7 @@ const CreatePage = () => {
   
   const imageOptions = images.map(img => ({
     value: img.id.toString(),
-    label: img.filename,
+    label: `${img.filename} (${img.source})`,
   }));
   
   const hasTransformations = 
@@ -117,19 +134,52 @@ const CreatePage = () => {
       <div className="mb-6">
         <h1 className="text-3xl font-semibold text-slate-900">Create Transformation</h1>
         <p className="text-slate-600 mt-1">
-          Apply transformations to create new images
+          Apply transformations to any image from your gallery
         </p>
       </div>
       
-      {/* Image Selector */}
+      {/* Image Selector - Gallery View */}
       <div className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
-        <Dropdown
-          label="Select Image"
-          options={imageOptions}
-          value={selectedImageId}
-          onChange={setSelectedImageId}
-          placeholder="Choose an image to transform..."
-        />
+        <h3 className="text-lg font-semibold text-slate-900 mb-4">Select an Image to Transform</h3>
+        
+        {loading ? (
+          <div className="flex justify-center py-12">
+            <Spinner size="lg" />
+          </div>
+        ) : images.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-slate-500">No images found in gallery.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+            {images.map((image) => (
+              <div
+                key={image.id}
+                onClick={() => setSelectedImageId(image.id.toString())}
+                className={`cursor-pointer rounded-lg border-2 overflow-hidden transition-all hover:shadow-lg ${
+                  selectedImageId === image.id.toString() 
+                    ? 'border-indigo-500 ring-2 ring-indigo-200' 
+                    : 'border-slate-200'
+                }`}
+              >
+                <div className="aspect-square relative">
+                  <img src={image.url} alt={image.filename} className="w-full h-full object-cover" />
+                  <div className="absolute top-1 right-1">
+                    <Badge 
+                      variant={image.source === 'uploaded' ? 'primary' : image.source === 'edited' ? 'success' : 'default'}
+                      className="text-xs"
+                    >
+                      {image.source}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="p-2">
+                  <p className="text-xs text-slate-600 truncate">{image.filename}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       
       {selectedImage ? (

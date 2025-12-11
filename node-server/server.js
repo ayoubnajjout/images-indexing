@@ -10,6 +10,9 @@ import Image from './models/Image.js';
 
 dotenv.config();
 
+// Python API URL for YOLO detection and descriptors
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8000';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -283,4 +286,273 @@ app.get('/api/images/categories/list', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Python API URL: ${PYTHON_API_URL}`);
+});
+
+// ==================== DETECTION ROUTES ====================
+
+// Run object detection on an image
+app.post('/api/images/:id/detect', async (req, res) => {
+  try {
+    const image = await Image.findById(req.params.id);
+    if (!image) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    const imageUrl = `http://localhost:${PORT}${image.path}`;
+
+    // Call Python API for detection
+    const response = await fetch(`${PYTHON_API_URL}/detect-and-describe/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: imageUrl })
+    });
+
+    if (!response.ok) {
+      throw new Error('Detection API failed');
+    }
+
+    const result = await response.json();
+
+    // Update image with detections
+    image.detections = result.detections;
+    image.objectCount = result.count;
+    await image.save();
+
+    res.json({
+      success: true,
+      detections: result.detections,
+      count: result.count
+    });
+  } catch (error) {
+    console.error('Detection error:', error);
+    res.status(500).json({ error: 'Failed to run detection' });
+  }
+});
+
+// Get descriptors for a specific object
+app.get('/api/images/:imageId/objects/:objectId/descriptors', async (req, res) => {
+  try {
+    const { imageId, objectId } = req.params;
+    
+    const image = await Image.findById(imageId);
+    if (!image) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    // Find the detection
+    const detection = image.detections?.find(d => d.id === parseInt(objectId));
+    if (!detection) {
+      return res.status(404).json({ error: 'Object not found' });
+    }
+
+    // If descriptors are already stored, return them
+    if (detection.descriptors) {
+      return res.json({
+        imageId,
+        objectId,
+        descriptors: detection.descriptors
+      });
+    }
+
+    // Otherwise, compute descriptors via Python API
+    const imageUrl = `http://localhost:${PORT}${image.path}`;
+    
+    const response = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: imageUrl,
+        bbox: detection.bbox
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Descriptor API failed');
+    }
+
+    const result = await response.json();
+
+    res.json({
+      imageId,
+      objectId,
+      descriptors: result.descriptors
+    });
+  } catch (error) {
+    console.error('Descriptor error:', error);
+    res.status(500).json({ error: 'Failed to get descriptors' });
+  }
+});
+
+// Compute descriptors for an object
+app.post('/api/images/:imageId/objects/:objectId/descriptors', async (req, res) => {
+  try {
+    const { imageId, objectId } = req.params;
+    
+    const image = await Image.findById(imageId);
+    if (!image) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    const detectionIndex = image.detections?.findIndex(d => d.id === parseInt(objectId));
+    if (detectionIndex === -1 || detectionIndex === undefined) {
+      return res.status(404).json({ error: 'Object not found' });
+    }
+
+    const detection = image.detections[detectionIndex];
+    const imageUrl = `http://localhost:${PORT}${image.path}`;
+
+    const response = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: imageUrl,
+        bbox: detection.bbox
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Descriptor API failed');
+    }
+
+    const result = await response.json();
+
+    // Store descriptors in the detection
+    image.detections[detectionIndex].descriptors = result.descriptors;
+    await image.save();
+
+    res.json({
+      imageId,
+      objectId,
+      descriptors: result.descriptors,
+      success: true
+    });
+  } catch (error) {
+    console.error('Compute descriptor error:', error);
+    res.status(500).json({ error: 'Failed to compute descriptors' });
+  }
+});
+
+// ==================== SEARCH ROUTES ====================
+
+// Search for similar objects
+app.post('/api/search/similar', async (req, res) => {
+  try {
+    const { queryImageId, queryObjectId, topK = 10, weights } = req.body;
+
+    // Get query image and object
+    const queryImage = await Image.findById(queryImageId);
+    if (!queryImage) {
+      return res.status(404).json({ error: 'Query image not found' });
+    }
+
+    const queryDetection = queryImage.detections?.find(d => d.id === parseInt(queryObjectId));
+    if (!queryDetection) {
+      return res.status(404).json({ error: 'Query object not found' });
+    }
+
+    // Get or compute query descriptors
+    let queryDescriptors = queryDetection.descriptors;
+    if (!queryDescriptors) {
+      const imageUrl = `http://localhost:${PORT}${queryImage.path}`;
+      const descResponse = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: imageUrl, bbox: queryDetection.bbox })
+      });
+      
+      if (!descResponse.ok) {
+        throw new Error('Failed to get query descriptors');
+      }
+      
+      const descResult = await descResponse.json();
+      queryDescriptors = descResult.descriptors;
+    }
+
+    // Get all images with detections (exclude query image)
+    const images = await Image.find({ 
+      'detections.0': { $exists: true },
+      _id: { $ne: queryImageId }
+    });
+
+    // Build database of objects with descriptors - NO label filtering
+    // Similarity is based purely on descriptor values (color, texture, shape)
+    const database = [];
+    for (const img of images) {
+      for (const det of img.detections || []) {
+        // Include all objects that have descriptors (no label filtering)
+        if (det.descriptors) {
+          database.push({
+            id: `${img._id}_${det.id}`,
+            imageId: img._id.toString(),
+            objectId: det.id,
+            label: det.label,
+            confidence: det.confidence,
+            bbox: det.bbox,
+            descriptors: det.descriptors,
+            image: {
+              id: img._id,
+              filename: img.name,
+              url: `http://localhost:${PORT}${img.path}`
+            }
+          });
+        }
+      }
+    }
+
+    // Call Python API to compute similarities (pass weights if provided)
+    const searchPayload = {
+      query_descriptors: queryDescriptors,
+      database,
+      top_k: topK
+    };
+    
+    // Add descriptor weights if specified
+    if (weights) {
+      searchPayload.weights = weights;
+    }
+    
+    const searchResponse = await fetch(`${PYTHON_API_URL}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(searchPayload)
+    });
+
+    if (!searchResponse.ok) {
+      throw new Error('Search API failed');
+    }
+
+    const searchResult = await searchResponse.json();
+
+    console.log('Python API search result (first item):', JSON.stringify(searchResult.results?.[0], null, 2));
+
+    // Format results with detailed similarity scores
+    const results = searchResult.results.map((r, index) => {
+      const dbItem = database.find(d => d.id === r.id);
+      console.log(`Result ${index + 1} scores:`, r.scores);
+      return {
+        rank: index + 1,
+        imageId: r.imageId,
+        objectId: r.objectId,
+        similarity: r.similarity,
+        scores: r.scores, // Include detailed scores (color, texture, shape)
+        image: dbItem?.image,
+        object: {
+          id: r.objectId,
+          label: r.label,
+          confidence: dbItem?.confidence,
+          bbox: dbItem?.bbox
+        }
+      };
+    });
+
+    res.json({
+      query: { imageId: queryImageId, objectId: queryObjectId },
+      results,
+      total: results.length
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
 });

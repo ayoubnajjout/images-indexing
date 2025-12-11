@@ -25,7 +25,8 @@ export const imageService = {
         url: img.url,
         filename: img.name || img.filename,
         uploadDate: img.uploadedAt ? new Date(img.uploadedAt).toISOString().split('T')[0] : null,
-        objectCount: 0
+        objectCount: img.objectCount || 0,
+        detections: img.detections || []
       }));
       
       return { 
@@ -51,7 +52,8 @@ export const imageService = {
         url: response.url,
         filename: response.name || response.filename,
         uploadDate: response.uploadedAt ? new Date(response.uploadedAt).toISOString().split('T')[0] : null,
-        objectCount: 0
+        objectCount: response.objectCount || 0,
+        detections: response.detections || []
       };
     } catch (error) {
       console.error('Failed to fetch image:', error);
@@ -101,7 +103,8 @@ export const imageService = {
         url: img.url,
         filename: img.name,
         id: img._id || img.path,
-        objectCount: 0
+        objectCount: img.objectCount || 0,
+        detections: img.detections || []
       }));
       
       return {
@@ -115,26 +118,19 @@ export const imageService = {
     }
   },
 
-  // Run object detection
+  // Run object detection on an image
   async detectObjects(imageId) {
-    if (MOCK_MODE) {
-      await delay(2000);
-      const image = mockImages.find(img => img.id === imageId);
-      if (!image) throw new Error('Image not found');
-      
-      // Simulate detection results
-      const detections = [
-        { id: Date.now(), label: 'car', confidence: 0.95, bbox: [100, 150, 300, 400] },
-        { id: Date.now() + 1, label: 'person', confidence: 0.92, bbox: [50, 100, 150, 350] },
-      ];
-      
-      image.detections = detections;
-      image.objectCount = detections.length;
-      
-      return { detections, success: true };
+    try {
+      const response = await apiClient.post(`/images/${imageId}/detect`, {});
+      return {
+        detections: response.detections,
+        count: response.count,
+        success: response.success
+      };
+    } catch (error) {
+      console.error('Failed to detect objects:', error);
+      throw error;
     }
-    
-    return apiClient.post(`/images/${imageId}/detect`, {});
   },
 };
 

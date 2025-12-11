@@ -5,10 +5,11 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import Image from '../models/Image.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env from parent directory (node-server)
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI)
@@ -20,39 +21,39 @@ mongoose.connect(process.env.MONGODB_URI)
 
 async function syncCategoriesToDB() {
   try {
-    console.log('Starting sync of category images to database...\n');
+    console.log('Starting sync of images to database...\n');
     
-    const categoriesPath = path.join(__dirname, '..', 'S3', 'images');
+    const imagesPath = path.join(__dirname, '..', 'S3', 'images');
     
-    if (!fs.existsSync(categoriesPath)) {
+    if (!fs.existsSync(imagesPath)) {
       console.error('Images folder not found!');
       process.exit(1);
     }
     
-    // Get all category folders
-    const categories = fs.readdirSync(categoriesPath, { withFileTypes: true })
-      .filter(dirent => dirent.isDirectory())
-      .map(dirent => dirent.name);
-    
-    console.log(`Found ${categories.length} categories: ${categories.join(', ')}\n`);
-    
     let totalAdded = 0;
     let totalSkipped = 0;
     
-    for (const category of categories) {
-      const categoryPath = path.join(categoriesPath, category);
-      const files = fs.readdirSync(categoryPath);
+    // Get all items in the images folder
+    const items = fs.readdirSync(imagesPath, { withFileTypes: true });
+    
+    // Get direct image files (not in subfolders)
+    const directFiles = items.filter(item => item.isFile() && isImageFile(item.name));
+    
+    // Get category folders
+    const categories = items.filter(item => item.isDirectory()).map(item => item.name);
+    
+    // Process direct images first
+    if (directFiles.length > 0) {
+      console.log(`Processing ${directFiles.length} images in root folder...`);
       
-      console.log(`Processing category: ${category} (${files.length} files)`);
-      
-      for (const file of files) {
-        const filePath = path.join(categoryPath, file);
+      for (const file of directFiles) {
+        const filePath = path.join(imagesPath, file.name);
         const stats = fs.statSync(filePath);
         
         // Check if image already exists in database
         const existingImage = await Image.findOne({
           category: 'categories',
-          path: `/images/${category}/${file}`
+          path: `/images/${file.name}`
         });
         
         if (existingImage) {
@@ -62,17 +63,59 @@ async function syncCategoriesToDB() {
         
         // Add image to database
         const newImage = new Image({
-          name: file,
-          originalName: file,
-          filename: file,
-          path: `/images/${category}/${file}`,
+          name: file.name,
+          originalName: file.name,
+          filename: file.name,
+          path: `/images/${file.name}`,
           category: 'categories',
           size: stats.size,
-          mimetype: getMimeType(file)
+          mimetype: getMimeType(file.name)
         });
         
         await newImage.save();
         totalAdded++;
+      }
+    }
+    
+    // Process category subfolders
+    if (categories.length > 0) {
+      console.log(`Found ${categories.length} category folders: ${categories.join(', ')}\n`);
+      
+      for (const category of categories) {
+        const categoryPath = path.join(imagesPath, category);
+        const files = fs.readdirSync(categoryPath).filter(f => isImageFile(f));
+        
+        console.log(`Processing category: ${category} (${files.length} files)`);
+        
+        for (const file of files) {
+          const filePath = path.join(categoryPath, file);
+          const stats = fs.statSync(filePath);
+          
+          // Check if image already exists in database
+          const existingImage = await Image.findOne({
+            category: 'categories',
+            path: `/images/${category}/${file}`
+          });
+          
+          if (existingImage) {
+            totalSkipped++;
+            continue;
+          }
+          
+          // Add image to database
+          const newImage = new Image({
+            name: file,
+            originalName: file,
+            filename: file,
+            path: `/images/${category}/${file}`,
+            category: 'categories',
+            size: stats.size,
+            mimetype: getMimeType(file)
+          });
+          
+          await newImage.save();
+          totalAdded++;
+        }
       }
     }
     
@@ -108,6 +151,11 @@ function getMimeType(filename) {
     '.bmp': 'image/bmp'
   };
   return mimeTypes[ext] || 'image/jpeg';
+}
+
+function isImageFile(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext);
 }
 
 // Run the sync
