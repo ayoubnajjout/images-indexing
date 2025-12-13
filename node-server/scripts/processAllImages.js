@@ -104,7 +104,7 @@ async function processImage(image) {
     const response = await fetch(`${PYTHON_API_URL}/detect-and-describe/url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: imageUrl })
+      body: JSON.stringify({ url: imageUrl.replace('localhost', 'node-server') })
     });
     
     if (!response.ok) {

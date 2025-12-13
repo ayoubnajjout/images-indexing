@@ -100,7 +100,7 @@ class YOLODetector:
             - bbox: [x1, y1, x2, y2] bounding box
         """
         # Run inference
-        results = self.model(image, verbose=False)[0]
+        results = self.model(image, device='cpu', verbose=False)[0]
         
         detections = []
         detection_id = 1

@@ -26,6 +26,46 @@ services:
     networks:
       - app-network
 
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: client
+    ports:
+      - "3000:3000"
+    networks:
+      - app-network
+    depends_on:
+      - node-server
+
+  node-server:
+    build:
+      context: ./node-server
+      dockerfile: Dockerfile
+    container_name: node-server
+    ports:
+      - "5000:5000"
+    environment:
+      - PYTHON_API_URL=http://python-api:8000
+      - MONGODB_URI=mongodb://mongodb:27017/image_indexing
+    volumes:
+      - ./node-server/S3:/app/S3
+    networks:
+      - app-network
+    depends_on:
+      - mongodb
+      - python-api
+
+  python-api:
+    build:
+      context: ./python-api
+      dockerfile: Dockerfile
+    container_name: python-api
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+
 volumes:
   mongodb_data:
 
