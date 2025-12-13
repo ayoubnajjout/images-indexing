@@ -25,24 +25,25 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/image-
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8000';
 const SERVER_PORT = process.env.PORT || 5000;
 
-// Image Schema (same as in models/Image.js)
+// Image Schema - matching the new Python API output format
 const detectionSchema = new mongoose.Schema({
   id: Number,
-  label: String,
+  label: String,           // ImageNet synset ID (e.g., 'n01440764')
+  label_readable: String,  // Human-readable name (e.g., 'tench')
+  class_id: Number,        // Numeric class ID (0-14)
   confidence: Number,
   bbox: [Number],
   descriptors: {
     color: {
-      hsv_histogram: {
-        hue: [Number],
-        saturation: [Number],
-        brightness: [Number]
-      },
-      dominant_colors: [{
-        rgb: [Number],
-        hex: String,
-        percentage: Number
-      }]
+      histogram: [Number],
+      hsHistogram: [Number],
+      dominantColors: [{
+        color: String,
+        percentage: Number,
+        name: String
+      }],
+      dominantColorsHS: [[Number]],
+      labColorMoments: [Number]
     },
     texture: {
       tamura: {
@@ -50,14 +51,19 @@ const detectionSchema = new mongoose.Schema({
         contrast: Number,
         directionality: Number
       },
-      gabor: {
-        mean: [Number],
-        std: [Number]
-      }
+      gabor: [Number]
     },
     shape: {
-      hu_moments: [Number],
-      orientation_histogram: [Number]
+      huMoments: [Number],
+      contourHuMoments: [Number],
+      orientationHistogram: [Number],
+      orientationHistogramContour: [Number],
+      shapeMetrics: {
+        solidity: Number,
+        aspectRatio: Number,
+        compactness: Number
+      },
+      fourierDescriptors: [Number]
     }
   }
 }, { _id: false });
@@ -114,17 +120,15 @@ async function processImage(image) {
     
     const detections = result.detections || [];
     
-    // Format detections for storage
+    // Format detections for storage - keep the exact format from Python API
     const formattedDetections = detections.map((det, index) => ({
-      id: index,
+      id: det.id || index,
       label: det.label,
+      label_readable: det.label_readable,
+      class_id: det.class_id,
       confidence: det.confidence,
       bbox: det.bbox,
-      descriptors: det.descriptors ? {
-        color: det.descriptors.color || null,
-        texture: det.descriptors.texture || null,
-        shape: det.descriptors.shape || null
-      } : null
+      descriptors: det.descriptors || null
     }));
     
     // Update image in database
@@ -141,7 +145,24 @@ async function processImage(image) {
       const hasColor = det.descriptors?.color ? '✓' : '✗';
       const hasTexture = det.descriptors?.texture ? '✓' : '✗';
       const hasShape = det.descriptors?.shape ? '✓' : '✗';
-      console.log(`    Object ${idx}: ${det.label} (${(det.confidence * 100).toFixed(1)}%) - Color:${hasColor} Texture:${hasTexture} Shape:${hasShape}`);
+      const label = det.label_readable || det.label;
+      console.log(`    Object ${idx}: ${label} (${(det.confidence * 100).toFixed(1)}%) - Color:${hasColor} Texture:${hasTexture} Shape:${hasShape}`);
+      
+      // Show some descriptor details
+      if (det.descriptors?.color) {
+        const colorDesc = det.descriptors.color;
+        const histLen = colorDesc.histogram?.length || 0;
+        const domColorsLen = colorDesc.dominantColors?.length || 0;
+        const labMomentsLen = colorDesc.labColorMoments?.length || 0;
+        console.log(`      Color: histogram[${histLen}], dominantColors[${domColorsLen}], labMoments[${labMomentsLen}]`);
+      }
+      if (det.descriptors?.shape) {
+        const shapeDesc = det.descriptors.shape;
+        const huLen = shapeDesc.huMoments?.length || shapeDesc.contourHuMoments?.length || 0;
+        const fourierLen = shapeDesc.fourierDescriptors?.length || 0;
+        const hasMetrics = shapeDesc.shapeMetrics ? '✓' : '✗';
+        console.log(`      Shape: huMoments[${huLen}], fourier[${fourierLen}], metrics:${hasMetrics}`);
+      }
     });
     
     successCount++;

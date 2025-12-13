@@ -401,6 +401,91 @@ async def search_similar(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/compare-images")
+async def compare_images(file1: UploadFile = File(...), file2: UploadFile = File(...)):
+    """
+    Compare two images and compute their similarity.
+    
+    Returns similarity score and detailed breakdown.
+    """
+    try:
+        # Read images
+        contents1 = await file1.read()
+        contents2 = await file2.read()
+        
+        image1 = load_image_from_bytes(contents1)
+        image2 = load_image_from_bytes(contents2)
+        
+        # Extract descriptors
+        desc1 = extractor.extract_all(image1)
+        desc2 = extractor.extract_all(image2)
+        
+        # Compute similarity
+        similarity_result = extractor.compute_similarity_detailed(desc1, desc2)
+        
+        return {
+            "success": True,
+            "file1": file1.filename,
+            "file2": file2.filename,
+            "similarity": similarity_result['total'],
+            "details": similarity_result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/compare-images/base64")
+async def compare_images_base64(data: dict):
+    """
+    Compare two base64-encoded images.
+    
+    Expects: { "image1": "base64_string", "image2": "base64_string" }
+    """
+    try:
+        if "image1" not in data or "image2" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'image1' or 'image2' field")
+        
+        image1 = load_image_from_base64(data["image1"])
+        image2 = load_image_from_base64(data["image2"])
+        
+        desc1 = extractor.extract_all(image1)
+        desc2 = extractor.extract_all(image2)
+        
+        similarity_result = extractor.compute_similarity_detailed(desc1, desc2)
+        
+        return {
+            "success": True,
+            "similarity": similarity_result['total'],
+            "details": similarity_result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/model-info")
+async def get_model_info():
+    """
+    Get information about the loaded detection model.
+    
+    Returns model path and supported classes.
+    """
+    from detection import IMAGENET_CLASSES, IMAGENET_READABLE_NAMES
+    
+    return {
+        "success": True,
+        "model_path": detector.model_path,
+        "num_classes": len(IMAGENET_CLASSES),
+        "classes": [
+            {
+                "id": k,
+                "synset": v,
+                "name": IMAGENET_READABLE_NAMES.get(k, v)
+            }
+            for k, v in IMAGENET_CLASSES.items()
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

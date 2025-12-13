@@ -284,12 +284,65 @@ app.get('/api/images/categories/list', async (req, res) => {
   }
 });
 
+// Debug endpoint to test Python API descriptor extraction
+app.get('/api/debug/test-descriptors/:id', async (req, res) => {
+  try {
+    const image = await Image.findById(req.params.id);
+    if (!image) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    const imageUrl = `http://localhost:${PORT}${image.path}`;
+    console.log(`Testing descriptors for: ${imageUrl}`);
+
+    // Call Python API directly
+    const response = await fetch(`${PYTHON_API_URL}/detect-and-describe/url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: imageUrl })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(500).json({ error: `Python API error: ${errorText}` });
+    }
+
+    const result = await response.json();
+    
+    // Return raw result from Python API for debugging
+    res.json({
+      imageId: req.params.id,
+      imagePath: image.path,
+      pythonApiResponse: result,
+      currentDbDetections: image.detections
+    });
+  } catch (error) {
+    console.error('Debug test error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Python API URL: ${PYTHON_API_URL}`);
 });
 
 // ==================== DETECTION ROUTES ====================
+
+// Get model info
+app.get('/api/model/info', async (req, res) => {
+  try {
+    const response = await fetch(`${PYTHON_API_URL}/model-info`);
+    if (!response.ok) {
+      throw new Error('Failed to get model info');
+    }
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('Model info error:', error);
+    res.status(500).json({ error: 'Failed to get model info' });
+  }
+});
 
 // Run object detection on an image
 app.post('/api/images/:id/detect', async (req, res) => {
@@ -314,7 +367,7 @@ app.post('/api/images/:id/detect', async (req, res) => {
 
     const result = await response.json();
 
-    // Update image with detections
+    // Update image with detections (now includes label_readable and class_id)
     image.detections = result.detections;
     image.objectCount = result.count;
     await image.save();
@@ -487,6 +540,7 @@ app.post('/api/search/similar', async (req, res) => {
             imageId: img._id.toString(),
             objectId: det.id,
             label: det.label,
+            label_readable: det.label_readable,
             confidence: det.confidence,
             bbox: det.bbox,
             descriptors: det.descriptors,
@@ -540,8 +594,10 @@ app.post('/api/search/similar', async (req, res) => {
         object: {
           id: r.objectId,
           label: r.label,
+          label_readable: dbItem?.label_readable,
           confidence: dbItem?.confidence,
-          bbox: dbItem?.bbox
+          bbox: dbItem?.bbox,
+          descriptors: dbItem?.descriptors // Include descriptors for display
         }
       };
     });

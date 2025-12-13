@@ -12,6 +12,13 @@ const ObjectList = ({ detections, selectedObjectId, onObjectSelect, imageId }) =
   const handleUseAsQuery = (objectId) => {
     navigate(`/search?imageId=${imageId}&objectId=${objectId}`);
   };
+
+  // Helper to get display label (prefer readable name)
+  const getDisplayLabel = (detection) => {
+    if (detection.label_readable) return detection.label_readable;
+    if (detection.label) return detection.label;
+    return 'Unknown';
+  };
   
   if (!detections || detections.length === 0) {
     return (
@@ -52,12 +59,20 @@ const ObjectList = ({ detections, selectedObjectId, onObjectSelect, imageId }) =
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <h4 className="font-medium text-slate-900 capitalize">
-                    {detection.label}
+                    {getDisplayLabel(detection)}
                   </h4>
+                  {detection.label && detection.label !== detection.label_readable && (
+                    <span className="text-xs text-slate-400 font-mono">{detection.label}</span>
+                  )}
                   <div className="flex items-center gap-2 mt-1">
                     <Badge variant="success" size="sm">
                       {Math.round(detection.confidence * 100)}% confident
                     </Badge>
+                    {detection.class_id !== undefined && (
+                      <Badge variant="default" size="sm">
+                        Class {detection.class_id}
+                      </Badge>
+                    )}
                     {selectedObjectId === detection.id && (
                       <Badge variant="primary" size="sm">
                         Selected

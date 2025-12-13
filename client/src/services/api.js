@@ -81,5 +81,17 @@ class ApiClient {
 
 const apiClient = new ApiClient(API_BASE_URL);
 
+// Model service for getting detection model info
+export const modelService = {
+  async getModelInfo() {
+    try {
+      return await apiClient.get('/model/info');
+    } catch (error) {
+      console.error('Failed to get model info:', error);
+      throw error;
+    }
+  }
+};
+
 export default apiClient;
 export { MOCK_MODE };

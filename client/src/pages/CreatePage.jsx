@@ -7,7 +7,7 @@ import { imageService, transformService } from '../services';
 const CreatePage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  
+
   const [images, setImages] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState(searchParams.get('imageId') || '');
   const [selectedImage, setSelectedImage] = useState(null);
@@ -20,16 +20,26 @@ const CreatePage = () => {
   });
   const [applying, setApplying] = useState(false);
   const [toast, setToast] = useState({ visible: false, message: '', type: 'info' });
-  
+
+  // Ref for edit section
+  const editSectionRef = React.useRef(null);
+
   useEffect(() => {
     loadImages();
   }, []);
-  
+
   useEffect(() => {
     if (selectedImageId) {
       loadImageDetails();
     }
   }, [selectedImageId]);
+
+  // Auto-scroll to edit section when image is selected
+  useEffect(() => {
+    if (selectedImage && editSectionRef.current) {
+      editSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [selectedImage]);
   
   const loadImages = async () => {
     try {
@@ -185,7 +195,7 @@ const CreatePage = () => {
       {selectedImage ? (
         <>
           {/* Main Content */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          <div ref={editSectionRef} className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
             {/* Left: Transform Controls */}
             <div>
               <TransformControls
@@ -194,7 +204,6 @@ const CreatePage = () => {
                 onReset={handleReset}
               />
             </div>
-            
             {/* Right: Preview */}
             <div className="lg:col-span-2">
               <ImageTransformer
@@ -204,7 +213,6 @@ const CreatePage = () => {
               />
             </div>
           </div>
-          
           {/* Action Buttons */}
           <div className="flex items-center justify-between bg-white border border-slate-200 rounded-lg p-6">
             <div className="text-sm text-slate-600">
@@ -219,7 +227,6 @@ const CreatePage = () => {
                 'No transformations applied yet'
               )}
             </div>
-            
             <div className="flex gap-2">
               <Button
                 variant="secondary"

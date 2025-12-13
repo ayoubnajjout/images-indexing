@@ -2,17 +2,22 @@ import mongoose from 'mongoose';
 
 const detectionSchema = new mongoose.Schema({
   id: Number,
-  label: String,
+  label: String,           // ImageNet synset ID (e.g., 'n01440764')
+  label_readable: String,  // Human-readable name (e.g., 'tench')
+  class_id: Number,        // Numeric class ID (0-14)
   confidence: Number,
   bbox: [Number], // [x1, y1, x2, y2]
   descriptors: {
     color: {
       histogram: [Number],
+      hsHistogram: [Number],        // 2D Hue-Saturation histogram
       dominantColors: [{
         color: String,
         percentage: Number,
         name: String
-      }]
+      }],
+      dominantColorsHS: [[Number]], // K-means clusters in HS space
+      labColorMoments: [Number]     // LAB color moments (mean, var, skew)
     },
     texture: {
       tamura: {
@@ -24,7 +29,15 @@ const detectionSchema = new mongoose.Schema({
     },
     shape: {
       huMoments: [Number],
-      orientationHistogram: [Number]
+      contourHuMoments: [Number],           // Hu moments from contour
+      orientationHistogram: [Number],
+      orientationHistogramContour: [Number], // Contour-based orientation histogram
+      shapeMetrics: {
+        solidity: Number,
+        aspectRatio: Number,
+        compactness: Number
+      },
+      fourierDescriptors: [Number]          // Fourier descriptors
     }
   }
 }, { _id: false });
