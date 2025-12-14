@@ -2,7 +2,7 @@
 FastAPI backend for YOLO object detection and visual descriptor extraction.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
@@ -85,13 +85,14 @@ async def detect_objects(file: UploadFile = File(...)):
 
 
 @app.post("/detect/base64")
-async def detect_objects_base64(data: dict):
+async def detect_objects_base64(request: Request):
     """
     Detect objects in a base64-encoded image using YOLOv8.
     
     Expects: { "image": "base64_encoded_string" }
     """
     try:
+        data = await request.json()
         if "image" not in data:
             raise HTTPException(status_code=400, detail="Missing 'image' field")
         
@@ -108,7 +109,7 @@ async def detect_objects_base64(data: dict):
 
 
 @app.post("/detect/url")
-async def detect_objects_url(data: dict):
+async def detect_objects_url(request: Request):
     """
     Detect objects in an image from URL.
     
@@ -117,6 +118,7 @@ async def detect_objects_url(data: dict):
     try:
         import requests
         
+        data = await request.json()
         if "url" not in data:
             raise HTTPException(status_code=400, detail="Missing 'url' field")
         
@@ -166,13 +168,14 @@ async def extract_descriptors(file: UploadFile = File(...), bbox: Optional[str] 
 
 
 @app.post("/descriptors/base64")
-async def extract_descriptors_base64(data: dict):
+async def extract_descriptors_base64(request: Request):
     """
     Extract visual descriptors from a base64-encoded image.
     
     Expects: { "image": "base64_string", "bbox": [x1, y1, x2, y2] (optional) }
     """
     try:
+        data = await request.json()
         if "image" not in data:
             raise HTTPException(status_code=400, detail="Missing 'image' field")
         
@@ -194,7 +197,7 @@ async def extract_descriptors_base64(data: dict):
 
 
 @app.post("/descriptors/url")
-async def extract_descriptors_url(data: dict):
+async def extract_descriptors_url(request: Request):
     """
     Extract visual descriptors from an image URL.
     
@@ -203,6 +206,7 @@ async def extract_descriptors_url(data: dict):
     try:
         import requests
         
+        data = await request.json()
         if "url" not in data:
             raise HTTPException(status_code=400, detail="Missing 'url' field")
         
@@ -270,23 +274,39 @@ async def detect_and_describe(file: UploadFile = File(...)):
 
 
 @app.post("/detect-and-describe/url")
-async def detect_and_describe_url(data: dict):
+async def detect_and_describe_url(request: Request):
     """
     Detect objects and extract descriptors from an image URL.
     """
     try:
         import requests
+        import traceback
+        
+        # Parse JSON body
+        data = await request.json()
+        print(f"Received data: {data}")
         
         if "url" not in data:
             raise HTTPException(status_code=400, detail="Missing 'url' field")
         
-        response = requests.get(data["url"], timeout=10)
-        response.raise_for_status()
+        url = data["url"]
+        print(f"Fetching image from URL: {url}")
+        
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            print(f"Successfully fetched image, size: {len(response.content)} bytes")
+        except requests.RequestException as e:
+            print(f"Failed to fetch image: {str(e)}")
+            traceback.print_exc()
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image: {str(e)}")
         
         image = load_image_from_bytes(response.content)
+        print(f"Loaded image, shape: {image.shape}")
         
         # Run detection
         detections = detector.detect(image)
+        print(f"Detection complete, found {len(detections)} objects")
         
         # Extract descriptors for each detection
         results = []
@@ -311,14 +331,16 @@ async def detect_and_describe_url(data: dict):
             "detections": results,
             "count": len(results)
         }
-    except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch image: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/similarity")
-async def compute_similarity(data: dict):
+async def compute_similarity(request: Request):
     """
     Compute similarity between two sets of descriptors.
     
@@ -329,6 +351,7 @@ async def compute_similarity(data: dict):
     }
     """
     try:
+        data = await request.json()
         if "descriptors1" not in data or "descriptors2" not in data:
             raise HTTPException(status_code=400, detail="Missing descriptor fields")
         
@@ -350,7 +373,7 @@ async def compute_similarity(data: dict):
 
 
 @app.post("/search")
-async def search_similar(data: dict):
+async def search_similar(request: Request):
     """
     Search for similar objects in a database of descriptors.
     
@@ -364,6 +387,7 @@ async def search_similar(data: dict):
     Returns detailed similarity scores for each result.
     """
     try:
+        data = await request.json()
         if "query_descriptors" not in data or "database" not in data:
             raise HTTPException(status_code=400, detail="Missing required fields")
         
@@ -435,13 +459,14 @@ async def compare_images(file1: UploadFile = File(...), file2: UploadFile = File
 
 
 @app.post("/compare-images/base64")
-async def compare_images_base64(data: dict):
+async def compare_images_base64(request: Request):
     """
     Compare two base64-encoded images.
     
     Expects: { "image1": "base64_string", "image2": "base64_string" }
     """
     try:
+        data = await request.json()
         if "image1" not in data or "image2" not in data:
             raise HTTPException(status_code=400, detail="Missing 'image1' or 'image2' field")
         

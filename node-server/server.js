@@ -19,6 +19,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Helper to build URLs for client access and for inter-container API calls
+function buildImageUrls(imagePath) {
+  const clientUrl = `http://localhost:${PORT}${imagePath}`;
+  // When running under docker-compose the Python API is addressed by service name
+  const internalHost = process.env.INTERNAL_HOST || (PYTHON_API_URL.includes('python-api') ? 'node-server' : 'localhost');
+  const apiUrl = `http://${internalHost}:${PORT}${imagePath}`;
+  return { clientUrl, apiUrl };
+}
+
 // Middleware
 app.use(cors({
   origin: ['http://localhost:5173', 'http://localhost:3000'],
@@ -79,52 +88,66 @@ const upload = multer({
   storage: uploadStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'));
+    // Accept based on mimetype first (recommended) and fall back to file extension
+    try {
+      if (file && file.mimetype && file.mimetype.startsWith('image/')) {
+        return cb(null, true);
+      }
+
+      const ext = (file?.originalname && path.extname(file.originalname).toLowerCase()) || '';
+      const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      if (allowedExts.includes(ext)) {
+        return cb(null, true);
+      }
+
+      return cb(new Error('Only image files are allowed!'));
+    } catch (err) {
+      return cb(new Error('Only image files are allowed!'));
     }
   }
 });
 
 // Routes
 
-// Upload single image
-app.post('/api/images/upload', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
+// Upload single image (wrap multer to handle errors and return JSON)
+app.post('/api/images/upload', (req, res) => {
+  upload.single('image')(req, res, async (err) => {
+    if (err) {
+      console.error('Multer upload error:', err);
+      return res.status(400).json({ error: err.message });
     }
 
-    const imageName = req.body.name || req.file.originalname;
-    
-    const newImage = new Image({
-      name: imageName,
-      originalName: req.file.originalname,
-      filename: req.file.filename,
-      path: `/upload/${req.file.filename}`,
-      category: 'uploaded',
-      size: req.file.size,
-      mimetype: req.file.mimetype
-    });
-
-    await newImage.save();
-
-    res.status(201).json({
-      message: 'Image uploaded successfully',
-      image: {
-        ...newImage.toObject(),
-        url: `http://localhost:${PORT}${newImage.path}`
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No image file provided' });
       }
-    });
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ error: 'Failed to upload image' });
-  }
+
+      const imageName = req.body.name || req.file.originalname;
+      
+      const newImage = new Image({
+        name: imageName,
+        originalName: req.file.originalname,
+        filename: req.file.filename,
+        path: `/upload/${req.file.filename}`,
+        category: 'uploaded',
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      });
+
+      await newImage.save();
+
+      res.status(201).json({
+        message: 'Image uploaded successfully',
+        image: {
+          ...newImage.toObject(),
+          url: `http://localhost:${PORT}${newImage.path}`
+        }
+      });
+    } catch (error) {
+      console.error('Upload error:', error);
+      res.status(500).json({ error: 'Failed to upload image' });
+    }
+  });
 });
 
 // Get all images with optional filter - returns metadata with file paths (with pagination)
@@ -292,19 +315,20 @@ app.get('/api/debug/test-descriptors/:id', async (req, res) => {
       return res.status(404).json({ error: 'Image not found' });
     }
 
-    const imageUrl = `http://localhost:${PORT}${image.path}`;
-    console.log(`Testing descriptors for: ${imageUrl}`);
+    const { clientUrl, apiUrl } = buildImageUrls(image.path);
+    console.log(`Testing descriptors for: ${clientUrl} (python-api will use ${apiUrl})`);
 
-    // Call Python API directly
+    // Call Python API directly using an internal URL that python-api can reach
     const response = await fetch(`${PYTHON_API_URL}/detect-and-describe/url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: imageUrl })
+      body: JSON.stringify({ url: apiUrl })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(500).json({ error: `Python API error: ${errorText}` });
+      console.error('Python API debug error:', response.status, errorText);
+      return res.status(502).json({ error: `Python API error: ${response.status} - ${errorText}` });
     }
 
     const result = await response.json();
@@ -352,17 +376,21 @@ app.post('/api/images/:id/detect', async (req, res) => {
       return res.status(404).json({ error: 'Image not found' });
     }
 
-    const imageUrl = `http://localhost:${PORT}${image.path}`;
+    const { clientUrl, apiUrl } = buildImageUrls(image.path);
+    console.log('Image path:', image.path);
+    console.log('API URL for Python:', apiUrl);
 
-    // Call Python API for detection
+    // Call Python API for detection (use internal URL so python-api can fetch it)
     const response = await fetch(`${PYTHON_API_URL}/detect-and-describe/url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: imageUrl })
+      body: JSON.stringify({ url: apiUrl })
     });
 
     if (!response.ok) {
-      throw new Error('Detection API failed');
+      const text = await response.text();
+      console.error('Detection API error:', response.status, text);
+      return res.status(502).json({ error: `Detection API failed: ${response.status} - ${text}` });
     }
 
     const result = await response.json();
@@ -409,19 +437,21 @@ app.get('/api/images/:imageId/objects/:objectId/descriptors', async (req, res) =
     }
 
     // Otherwise, compute descriptors via Python API
-    const imageUrl = `http://localhost:${PORT}${image.path}`;
-    
+    const { clientUrl, apiUrl } = buildImageUrls(image.path);
+
     const response = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: imageUrl,
+        url: apiUrl,
         bbox: detection.bbox
       })
     });
 
     if (!response.ok) {
-      throw new Error('Descriptor API failed');
+      const text = await response.text();
+      console.error('Descriptor API error:', response.status, text);
+      return res.status(502).json({ error: `Descriptor API failed: ${response.status} - ${text}` });
     }
 
     const result = await response.json();
@@ -453,19 +483,21 @@ app.post('/api/images/:imageId/objects/:objectId/descriptors', async (req, res) 
     }
 
     const detection = image.detections[detectionIndex];
-    const imageUrl = `http://localhost:${PORT}${image.path}`;
+    const { clientUrl, apiUrl } = buildImageUrls(image.path);
 
     const response = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: imageUrl,
+        url: apiUrl,
         bbox: detection.bbox
       })
     });
 
     if (!response.ok) {
-      throw new Error('Descriptor API failed');
+      const text = await response.text();
+      console.error('Descriptor API error:', response.status, text);
+      return res.status(502).json({ error: `Descriptor API failed: ${response.status} - ${text}` });
     }
 
     const result = await response.json();
@@ -507,14 +539,16 @@ app.post('/api/search/similar', async (req, res) => {
     // Get or compute query descriptors
     let queryDescriptors = queryDetection.descriptors;
     if (!queryDescriptors) {
-      const imageUrl = `http://localhost:${PORT}${queryImage.path}`;
+      const { clientUrl, apiUrl } = buildImageUrls(queryImage.path);
       const descResponse = await fetch(`${PYTHON_API_URL}/descriptors/url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: imageUrl, bbox: queryDetection.bbox })
+        body: JSON.stringify({ url: apiUrl, bbox: queryDetection.bbox })
       });
       
       if (!descResponse.ok) {
+        const text = await descResponse.text();
+        console.error('Query descriptor API error:', descResponse.status, text);
         throw new Error('Failed to get query descriptors');
       }
       
