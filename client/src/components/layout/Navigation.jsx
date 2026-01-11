@@ -9,7 +9,8 @@ const Navigation = () => {
     { path: '/', label: 'Collection' },
     { path: '/create', label: 'Create' },
     { path: '/descriptors', label: 'Descriptors' },
-    { path: '/search', label: 'Search' },
+    { path: '/search', label: 'Search 2D' },
+    { path: '/search-3d', label: 'Search 3D' },
   ];
   
   useEffect(() => {

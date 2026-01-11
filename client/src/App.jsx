@@ -6,7 +6,8 @@ import {
   ImageDetailPage, 
   DescriptorsPage, 
   SearchPage, 
-  CreatePage 
+  CreatePage,
+  Search3DPage
 } from './pages';
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
           <Route path="/image/:id" element={<ImageDetailPage />} />
           <Route path="/descriptors" element={<DescriptorsPage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/search-3d" element={<Search3DPage />} />
           <Route path="/create" element={<CreatePage />} />
         </Routes>
       </Layout>

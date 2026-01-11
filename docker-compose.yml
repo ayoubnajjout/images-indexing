@@ -48,8 +48,11 @@ services:
     environment:
       - PYTHON_API_URL=http://python-api:8000
       - MONGODB_URI=mongodb://mongodb:27017/image_indexing
+      - MODELS_3D_PATH=/app/3d-data/3D Models
+      - THUMBNAILS_3D_PATH=/app/3d-data/Thumbnails
     volumes:
       - ./node-server/S3:/app/S3
+      - ./3d-data:/app/3d-data:ro
     networks:
       - app-network
     depends_on:
@@ -63,6 +66,12 @@ services:
     container_name: python-api
     ports:
       - "8000:8000"
+    environment:
+      - USE_OPENGL=false
+      - MODELS_3D_PATH=/app/3d-data/3D Models
+      - THUMBNAILS_3D_PATH=/app/3d-data/Thumbnails
+    volumes:
+      - ./3d-data:/app/3d-data:ro
     networks:
       - app-network
     healthcheck:

@@ -1,5 +1,6 @@
 """
-FastAPI backend for YOLO object detection and visual descriptor extraction.
+FastAPI backend for YOLO object detection, visual descriptor extraction,
+and 3D model shape descriptor extraction using OpenGL.
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
@@ -10,11 +11,21 @@ import cv2
 from PIL import Image
 import io
 import base64
-from typing import List, Optional
+from typing import List, Optional, Dict
 import os
+import tempfile
+import shutil
+import glob
 
 from detection import YOLODetector
 from descriptors import DescriptorExtractor
+from shape_descriptors_3d import (
+    Shape3DDescriptorExtractor,
+    OBJLoader,
+    compute_similarity,
+    euclidean_distance,
+    chi_square_distance
+)
 
 app = FastAPI(
     title="Image Indexing API",
@@ -34,6 +45,40 @@ app.add_middleware(
 # Initialize detector and descriptor extractor
 detector = YOLODetector()
 extractor = DescriptorExtractor()
+
+# Initialize 3D shape descriptor extractor
+# Use environment variable to control OpenGL usage (for Docker compatibility)
+USE_OPENGL = os.environ.get('USE_OPENGL', 'true').lower() == 'true'
+extractor_3d = Shape3DDescriptorExtractor(use_opengl=USE_OPENGL)
+
+# 3D models database path
+MODELS_3D_PATH = os.environ.get('MODELS_3D_PATH', '/app/3d-data/3D Models')
+THUMBNAILS_3D_PATH = os.environ.get('THUMBNAILS_3D_PATH', '/app/3d-data/Thumbnails')
+
+
+def _find_thumbnail(thumbnails_base: str, category: str, obj_filename: str) -> Optional[str]:
+    """Find thumbnail file with various extensions and case variations."""
+    base_name = obj_filename.replace('.obj', '')
+    
+    # Try various extensions and case variations
+    for ext in ['.jpg', '.png', '.JPG', '.PNG', '.jpeg', '.JPEG']:
+        # Try exact match
+        test_path = os.path.join(thumbnails_base, category, base_name + ext)
+        if os.path.exists(test_path):
+            return test_path
+        
+        # Try capitalized first letter
+        cap_name = base_name[0].upper() + base_name[1:] if base_name else base_name
+        test_path = os.path.join(thumbnails_base, category, cap_name + ext)
+        if os.path.exists(test_path):
+            return test_path
+        
+        # Try lowercase
+        test_path = os.path.join(thumbnails_base, category, base_name.lower() + ext)
+        if os.path.exists(test_path):
+            return test_path
+    
+    return None
 
 
 def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
@@ -340,7 +385,7 @@ async def detect_and_describe_url(request: Request):
 
 
 @app.post("/similarity")
-async def compute_similarity(request: Request):
+async def compute_similarity_endpoint(request: Request):
     """
     Compute similarity between two sets of descriptors.
     
@@ -508,6 +553,481 @@ async def get_model_info():
             }
             for k, v in IMAGENET_CLASSES.items()
         ]
+    }
+
+
+# ========================
+# 3D Model Endpoints
+# ========================
+
+@app.get("/3d/categories")
+async def get_3d_categories():
+    """
+    Get all available 3D model categories from the database.
+    """
+    try:
+        categories = []
+        if os.path.exists(MODELS_3D_PATH):
+            for item in os.listdir(MODELS_3D_PATH):
+                item_path = os.path.join(MODELS_3D_PATH, item)
+                if os.path.isdir(item_path):
+                    # Count models in category
+                    model_count = len([f for f in os.listdir(item_path) 
+                                      if f.endswith('.obj')])
+                    categories.append({
+                        "name": item,
+                        "count": model_count
+                    })
+        
+        categories.sort(key=lambda x: x['name'])
+        
+        return {
+            "success": True,
+            "categories": categories,
+            "total": len(categories)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/3d/models")
+async def get_3d_models(category: Optional[str] = None, limit: int = 50, offset: int = 0):
+    """
+    Get list of 3D models, optionally filtered by category.
+    """
+    try:
+        models = []
+        
+        if category:
+            search_path = os.path.join(MODELS_3D_PATH, category)
+            if os.path.exists(search_path):
+                for filename in os.listdir(search_path):
+                    if filename.endswith('.obj'):
+                        model_path = os.path.join(search_path, filename)
+                        thumbnail_path = _find_thumbnail(THUMBNAILS_3D_PATH, category, filename)
+                        
+                        models.append({
+                            "filename": filename,
+                            "category": category,
+                            "path": model_path,
+                            "thumbnail": thumbnail_path
+                        })
+        else:
+            # Get all models from all categories
+            if os.path.exists(MODELS_3D_PATH):
+                for cat in os.listdir(MODELS_3D_PATH):
+                    cat_path = os.path.join(MODELS_3D_PATH, cat)
+                    if os.path.isdir(cat_path):
+                        for filename in os.listdir(cat_path):
+                            if filename.endswith('.obj'):
+                                model_path = os.path.join(cat_path, filename)
+                                thumbnail_path = _find_thumbnail(THUMBNAILS_3D_PATH, cat, filename)
+                                
+                                models.append({
+                                    "filename": filename,
+                                    "category": cat,
+                                    "path": model_path,
+                                    "thumbnail": thumbnail_path
+                                })
+        
+        total = len(models)
+        models = models[offset:offset + limit]
+        
+        return {
+            "success": True,
+            "models": models,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/3d/descriptors")
+async def extract_3d_descriptors(file: UploadFile = File(...)):
+    """
+    Extract shape descriptors from an uploaded .obj file.
+    
+    Returns all computed shape descriptors (D1, D2, D3, D4, A3, geometric features).
+    """
+    try:
+        if not file.filename.endswith('.obj'):
+            raise HTTPException(status_code=400, detail="File must be a .obj file")
+        
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.obj') as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            # Extract descriptors
+            result = extractor_3d.extract(tmp_path)
+            
+            if result is None:
+                raise HTTPException(status_code=400, detail="Failed to process OBJ file")
+            
+            result['filename'] = file.filename
+            
+            return {
+                "success": True,
+                "descriptors": result
+            }
+        finally:
+            # Clean up temp file
+            os.unlink(tmp_path)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/3d/descriptors/path")
+async def extract_3d_descriptors_from_path(request: Request):
+    """
+    Extract shape descriptors from a model file path.
+    
+    Expects: { "path": "/path/to/model.obj" }
+    """
+    try:
+        data = await request.json()
+        if "path" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'path' field")
+        
+        model_path = data["path"]
+        
+        if not os.path.exists(model_path):
+            raise HTTPException(status_code=404, detail="Model file not found")
+        
+        result = extractor_3d.extract(model_path)
+        
+        if result is None:
+            raise HTTPException(status_code=400, detail="Failed to process OBJ file")
+        
+        return {
+            "success": True,
+            "descriptors": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/3d/search")
+async def search_3d_models(file: UploadFile = File(...), 
+                           limit: int = 10,
+                           category: Optional[str] = None):
+    """
+    Search for similar 3D models by uploading a query .obj file.
+    
+    Returns the most similar models from the database ranked by similarity.
+    """
+    try:
+        if not file.filename.endswith('.obj'):
+            raise HTTPException(status_code=400, detail="File must be a .obj file")
+        
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.obj') as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            # Extract query descriptors
+            query_desc = extractor_3d.extract(tmp_path)
+            
+            if query_desc is None:
+                raise HTTPException(status_code=400, detail="Failed to process query OBJ file")
+            
+            # Search in database
+            results = await _search_similar_models(query_desc, limit, category)
+            
+            return {
+                "success": True,
+                "query": {
+                    "filename": file.filename,
+                    "num_vertices": query_desc['num_vertices'],
+                    "num_faces": query_desc['num_faces']
+                },
+                "results": results,
+                "count": len(results)
+            }
+        finally:
+            os.unlink(tmp_path)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/3d/search/path")
+async def search_3d_models_from_path(request: Request):
+    """
+    Search for similar 3D models using a model path from the database.
+    
+    Expects: { "path": "/path/to/model.obj", "limit": 10, "category": null }
+    """
+    try:
+        data = await request.json()
+        if "path" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'path' field")
+        
+        model_path = data["path"]
+        limit = data.get("limit", 10)
+        category = data.get("category", None)
+        
+        if not os.path.exists(model_path):
+            raise HTTPException(status_code=404, detail="Model file not found")
+        
+        # Extract query descriptors
+        query_desc = extractor_3d.extract(model_path)
+        
+        if query_desc is None:
+            raise HTTPException(status_code=400, detail="Failed to process OBJ file")
+        
+        # Search in database
+        results = await _search_similar_models(query_desc, limit, category, exclude_path=model_path)
+        
+        return {
+            "success": True,
+            "query": {
+                "path": model_path,
+                "filename": os.path.basename(model_path),
+                "num_vertices": query_desc['num_vertices'],
+                "num_faces": query_desc['num_faces']
+            },
+            "results": results,
+            "count": len(results)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _search_similar_models(query_desc: Dict, 
+                                  limit: int = 10, 
+                                  category: Optional[str] = None,
+                                  exclude_path: Optional[str] = None) -> List[Dict]:
+    """
+    Internal function to search for similar models in the database.
+    """
+    similarities = []
+    
+    # Determine search paths
+    if category:
+        search_paths = [os.path.join(MODELS_3D_PATH, category)]
+    else:
+        search_paths = [os.path.join(MODELS_3D_PATH, cat) 
+                       for cat in os.listdir(MODELS_3D_PATH)
+                       if os.path.isdir(os.path.join(MODELS_3D_PATH, cat))]
+    
+    # Search through all models
+    for search_path in search_paths:
+        if not os.path.exists(search_path):
+            continue
+            
+        cat_name = os.path.basename(search_path)
+        
+        for filename in os.listdir(search_path):
+            if not filename.endswith('.obj'):
+                continue
+                
+            model_path = os.path.join(search_path, filename)
+            
+            # Skip the query model itself
+            if exclude_path and os.path.abspath(model_path) == os.path.abspath(exclude_path):
+                continue
+            
+            try:
+                # Extract descriptors for database model
+                db_desc = extractor_3d.extract(model_path)
+                
+                if db_desc is None:
+                    continue
+                
+                # Compute similarity
+                similarity = compute_similarity(query_desc, db_desc)
+                
+                # Get thumbnail path
+                thumbnail_path = _find_thumbnail(THUMBNAILS_3D_PATH, cat_name, filename)
+                
+                similarities.append({
+                    "filename": filename,
+                    "category": cat_name,
+                    "path": model_path,
+                    "thumbnail": thumbnail_path,
+                    "similarity": float(similarity),
+                    "num_vertices": db_desc['num_vertices'],
+                    "num_faces": db_desc['num_faces']
+                })
+                
+            except Exception as e:
+                print(f"Error processing {model_path}: {e}")
+                continue
+    
+    # Sort by similarity (descending)
+    similarities.sort(key=lambda x: x['similarity'], reverse=True)
+    
+    return similarities[:limit]
+
+
+@app.post("/3d/compare")
+async def compare_3d_models(file1: UploadFile = File(...), 
+                            file2: UploadFile = File(...)):
+    """
+    Compare two 3D models and compute their similarity.
+    
+    Returns detailed similarity scores for each descriptor type.
+    """
+    try:
+        if not file1.filename.endswith('.obj') or not file2.filename.endswith('.obj'):
+            raise HTTPException(status_code=400, detail="Both files must be .obj files")
+        
+        # Save uploaded files temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.obj') as tmp1:
+            content1 = await file1.read()
+            tmp1.write(content1)
+            tmp1_path = tmp1.name
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.obj') as tmp2:
+            content2 = await file2.read()
+            tmp2.write(content2)
+            tmp2_path = tmp2.name
+        
+        try:
+            # Extract descriptors
+            desc1 = extractor_3d.extract(tmp1_path)
+            desc2 = extractor_3d.extract(tmp2_path)
+            
+            if desc1 is None or desc2 is None:
+                raise HTTPException(status_code=400, detail="Failed to process one or both OBJ files")
+            
+            # Compute overall similarity
+            similarity = compute_similarity(desc1, desc2)
+            
+            # Compute individual descriptor similarities
+            descriptor_similarities = {}
+            for desc_name in ['d1', 'd2', 'd3', 'd4', 'a3', 'bbox', 'moments', 'mesh_stats']:
+                arr1 = np.array(desc1['descriptors'].get(desc_name, []))
+                arr2 = np.array(desc2['descriptors'].get(desc_name, []))
+                
+                if len(arr1) > 0 and len(arr2) > 0 and len(arr1) == len(arr2):
+                    if desc_name in ['d1', 'd2', 'd3', 'd4', 'a3']:
+                        # Histogram intersection
+                        sim = float(np.sum(np.minimum(arr1, arr2)))
+                    else:
+                        # Cosine similarity
+                        norm1 = np.linalg.norm(arr1)
+                        norm2 = np.linalg.norm(arr2)
+                        if norm1 > 1e-10 and norm2 > 1e-10:
+                            sim = float((np.dot(arr1, arr2) / (norm1 * norm2) + 1) / 2)
+                        else:
+                            sim = 0.0
+                    
+                    descriptor_similarities[desc_name] = sim
+            
+            return {
+                "success": True,
+                "file1": file1.filename,
+                "file2": file2.filename,
+                "similarity": float(similarity),
+                "details": descriptor_similarities,
+                "model1_info": {
+                    "num_vertices": desc1['num_vertices'],
+                    "num_faces": desc1['num_faces'],
+                    "surface_area": desc1['surface_area']
+                },
+                "model2_info": {
+                    "num_vertices": desc2['num_vertices'],
+                    "num_faces": desc2['num_faces'],
+                    "surface_area": desc2['surface_area']
+                }
+            }
+        finally:
+            os.unlink(tmp1_path)
+            os.unlink(tmp2_path)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/3d/descriptor-info")
+async def get_3d_descriptor_info():
+    """
+    Get information about available 3D shape descriptors.
+    """
+    return {
+        "success": True,
+        "descriptors": [
+            {
+                "name": "D1",
+                "description": "Distribution of distances from centroid to random surface points",
+                "type": "shape_distribution",
+                "bins": 64
+            },
+            {
+                "name": "D2",
+                "description": "Distribution of distances between pairs of random surface points (most discriminative)",
+                "type": "shape_distribution",
+                "bins": 64
+            },
+            {
+                "name": "D3",
+                "description": "Distribution of sqrt(area) of triangles formed by 3 random points",
+                "type": "shape_distribution",
+                "bins": 64
+            },
+            {
+                "name": "D4",
+                "description": "Distribution of cbrt(volume) of tetrahedra formed by 4 random points",
+                "type": "shape_distribution",
+                "bins": 64
+            },
+            {
+                "name": "A3",
+                "description": "Distribution of angles between 3 random surface points",
+                "type": "shape_distribution",
+                "bins": 64
+            },
+            {
+                "name": "Bounding Box",
+                "description": "Features from oriented bounding box (aspect ratios, volume)",
+                "type": "geometric",
+                "dimensions": 6
+            },
+            {
+                "name": "Moments",
+                "description": "3D moment invariants (inertia tensor, higher-order moments)",
+                "type": "geometric",
+                "dimensions": 9
+            },
+            {
+                "name": "Mesh Statistics",
+                "description": "Statistical features of the mesh (vertex/face count, density)",
+                "type": "geometric",
+                "dimensions": 6
+            },
+            {
+                "name": "Multi-view Histogram",
+                "description": "Intensity histograms from multiple rendered viewpoints (OpenGL)",
+                "type": "view_based",
+                "requires_opengl": True
+            },
+            {
+                "name": "Multi-view Silhouette",
+                "description": "Silhouette features from multiple rendered viewpoints (OpenGL)",
+                "type": "view_based",
+                "requires_opengl": True
+            }
+        ],
+        "opengl_enabled": USE_OPENGL
     }
 
 
