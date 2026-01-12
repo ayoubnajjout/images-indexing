@@ -163,9 +163,9 @@ export const model3DService = {
    * Index all models in a category
    * @param {string} category - Category name
    */
-  async indexCategory(category) {
+  async indexCategory(category, batchSize = 3) {
     try {
-      return await apiClient.post('/3d/index/category', { category });
+      return await apiClient.post('/3d/index/category', { category, batchSize });
     } catch (error) {
       console.error('Failed to index category:', error);
       throw error;
@@ -173,11 +173,79 @@ export const model3DService = {
   },
 
   /**
-   * Index all models from all categories
+   * Index all models from all categories with SSE progress streaming
+   * @param {number} batchSize - Number of models to process in parallel
+   * @param {function} onProgress - Callback for progress updates
+   * @returns {Promise} Resolves when indexing is complete
    */
-  async indexAllCategories() {
+  indexAllCategoriesWithProgress(batchSize = 5, onProgress) {
+    return new Promise((resolve, reject) => {
+      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+      const url = `${baseUrl}/3d/index/all/stream?batchSize=${batchSize}`;
+      
+      const eventSource = new EventSource(url);
+      let finalResult = null;
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          switch (data.type) {
+            case 'status':
+              if (onProgress) onProgress({ status: data.message, current: 0, total: 0 });
+              break;
+            case 'init':
+              if (onProgress) onProgress({ 
+                status: `Found ${data.total} models (${data.skipped} already indexed)`,
+                current: data.skipped,
+                total: data.total,
+                toIndex: data.toIndex
+              });
+              break;
+            case 'progress':
+              if (onProgress) onProgress({
+                current: data.current,
+                total: data.total,
+                processed: data.processed,
+                toIndex: data.toIndex,
+                newlyIndexed: data.newlyIndexed,
+                failed: data.failed,
+                currentFile: data.currentFile,
+                category: data.category,
+                status: `Indexing: ${data.currentFile}`
+              });
+              break;
+            case 'complete':
+              finalResult = data;
+              eventSource.close();
+              resolve({ success: true, ...data });
+              break;
+            case 'error':
+              eventSource.close();
+              reject(new Error(data.message));
+              break;
+          }
+        } catch (err) {
+          console.error('Error parsing SSE data:', err);
+        }
+      };
+      
+      eventSource.onerror = (err) => {
+        eventSource.close();
+        if (!finalResult) {
+          reject(new Error('Connection lost during indexing'));
+        }
+      };
+    });
+  },
+
+  /**
+   * Index all models (non-streaming fallback)
+   * @param {number} batchSize - Number of models to process in parallel (default: 3)
+   */
+  async indexAllCategories(batchSize = 3) {
     try {
-      return await apiClient.post('/3d/index/all');
+      return await apiClient.post('/3d/index/all', { batchSize });
     } catch (error) {
       console.error('Failed to index all categories:', error);
       throw error;
@@ -192,6 +260,33 @@ export const model3DService = {
       return await apiClient.get('/3d/descriptor-info');
     } catch (error) {
       console.error('Failed to get descriptor info:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get full descriptors for a specific model (for visualization)
+   * @param {string} modelId - Model ID
+   */
+  async getModelDescriptors(modelId) {
+    try {
+      return await apiClient.get(`/3d/models/${modelId}/descriptors`);
+    } catch (error) {
+      console.error('Failed to get model descriptors:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Compare descriptors between two models
+   * @param {string} modelId1 - First model ID
+   * @param {string} modelId2 - Second model ID
+   */
+  async compareDescriptors(modelId1, modelId2) {
+    try {
+      return await apiClient.post('/3d/compare-descriptors', { modelId1, modelId2 });
+    } catch (error) {
+      console.error('Failed to compare descriptors:', error);
       throw error;
     }
   },
