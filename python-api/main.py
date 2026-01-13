@@ -24,7 +24,9 @@ from shape_descriptors_3d import (
     OBJLoader,
     compute_similarity,
     euclidean_distance,
-    chi_square_distance
+    chi_square_distance,
+    generate_thumbnail,
+    ThumbnailGenerator
 )
 
 app = FastAPI(
@@ -47,9 +49,10 @@ detector = YOLODetector()
 extractor = DescriptorExtractor()
 
 # Initialize 3D shape descriptor extractor
-# Use environment variable to control OpenGL usage (for Docker compatibility)
-USE_OPENGL = os.environ.get('USE_OPENGL', 'true').lower() == 'true'
-extractor_3d = Shape3DDescriptorExtractor(use_opengl=USE_OPENGL)
+extractor_3d = Shape3DDescriptorExtractor()
+
+# Initialize thumbnail generator (lazy - will be created on first use)
+thumbnail_generator: ThumbnailGenerator = None
 
 # 3D models database path
 MODELS_3D_PATH = os.environ.get('MODELS_3D_PATH', '/app/3d-data/3D Models')
@@ -1027,8 +1030,166 @@ async def get_3d_descriptor_info():
                 "requires_opengl": True
             }
         ],
-        "opengl_enabled": USE_OPENGL
+        "opengl_enabled": True
     }
+
+
+@app.post("/3d/thumbnail")
+async def generate_3d_thumbnail(request: Request):
+    """
+    Generate a thumbnail image for a 3D model using OpenGL rendering.
+    
+    Expects: { 
+        "model_path": "/path/to/model.obj",
+        "output_path": "/path/to/thumbnail.png" (optional),
+        "azimuth": 45.0 (optional),
+        "elevation": 30.0 (optional)
+    }
+    
+    If output_path is not provided, returns the thumbnail as base64.
+    """
+    global thumbnail_generator
+    
+    try:
+        data = await request.json()
+        if "model_path" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'model_path' field")
+        
+        model_path = data["model_path"]
+        output_path = data.get("output_path")
+        azimuth = float(data.get("azimuth", 45.0))
+        elevation = float(data.get("elevation", 30.0))
+        
+        if not os.path.exists(model_path):
+            raise HTTPException(status_code=404, detail="Model file not found")
+        
+        # Initialize thumbnail generator if needed
+        if thumbnail_generator is None:
+            thumbnail_generator = ThumbnailGenerator(width=256, height=256)
+            if not thumbnail_generator.initialize():
+                raise HTTPException(status_code=500, detail="Failed to initialize OpenGL renderer")
+        
+        if output_path:
+            # Generate and save to file
+            success = thumbnail_generator.generate(model_path, output_path, azimuth, elevation)
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
+            
+            return {
+                "success": True,
+                "output_path": output_path
+            }
+        else:
+            # Generate and return as base64
+            obj = OBJLoader(model_path)
+            if not obj.load():
+                raise HTTPException(status_code=400, detail="Failed to load OBJ file")
+            
+            image = thumbnail_generator.renderer.render_view(obj, azimuth, elevation)
+            if image is None:
+                raise HTTPException(status_code=500, detail="Failed to render model")
+            
+            # Convert to base64
+            from PIL import Image as PILImage
+            import io
+            import base64
+            
+            pil_img = PILImage.fromarray(image)
+            buffer = io.BytesIO()
+            pil_img.save(buffer, format="PNG")
+            img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            return {
+                "success": True,
+                "thumbnail": f"data:image/png;base64,{img_base64}"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/3d/generate-missing-thumbnails")
+async def generate_missing_thumbnails(request: Request):
+    """
+    Generate thumbnails for all models that don't have existing thumbnails.
+    
+    Expects: { "category": "optional_category_filter" }
+    """
+    global thumbnail_generator
+    
+    try:
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        category_filter = data.get("category")
+        
+        # Initialize thumbnail generator if needed
+        if thumbnail_generator is None:
+            thumbnail_generator = ThumbnailGenerator(width=256, height=256)
+            if not thumbnail_generator.initialize():
+                raise HTTPException(status_code=500, detail="Failed to initialize OpenGL renderer")
+        
+        generated = []
+        failed = []
+        skipped = []
+        
+        # Get categories to process
+        if category_filter:
+            categories = [category_filter]
+        else:
+            categories = [d for d in os.listdir(MODELS_3D_PATH) 
+                         if os.path.isdir(os.path.join(MODELS_3D_PATH, d)) and d != 'All Models']
+        
+        for category in categories:
+            models_dir = os.path.join(MODELS_3D_PATH, category)
+            thumbs_dir = os.path.join(THUMBNAILS_3D_PATH, category)
+            
+            if not os.path.exists(models_dir):
+                continue
+            
+            # Ensure thumbnails directory exists
+            os.makedirs(thumbs_dir, exist_ok=True)
+            
+            # Get all OBJ files
+            obj_files = [f for f in os.listdir(models_dir) if f.lower().endswith('.obj')]
+            
+            for obj_file in obj_files:
+                obj_path = os.path.join(models_dir, obj_file)
+                base_name = obj_file.replace('.obj', '').replace('.OBJ', '')
+                
+                # Check if thumbnail already exists
+                existing = _find_thumbnail(THUMBNAILS_3D_PATH, category, obj_file)
+                if existing:
+                    skipped.append({"model": obj_file, "category": category, "existing": existing})
+                    continue
+                
+                # Generate thumbnail
+                thumb_path = os.path.join(thumbs_dir, f"{base_name}.png")
+                try:
+                    success = thumbnail_generator.generate(obj_path, thumb_path)
+                    if success:
+                        generated.append({"model": obj_file, "category": category, "thumbnail": thumb_path})
+                    else:
+                        failed.append({"model": obj_file, "category": category, "error": "Generation failed"})
+                except Exception as e:
+                    failed.append({"model": obj_file, "category": category, "error": str(e)})
+        
+        return {
+            "success": True,
+            "generated": len(generated),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "details": {
+                "generated": generated[:50],  # Limit response size
+                "failed": failed[:50],
+                "skipped_count": len(skipped)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

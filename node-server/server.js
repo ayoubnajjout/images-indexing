@@ -422,6 +422,53 @@ function findThumbnail(thumbnailsBase, category, objFilename) {
   return null;
 }
 
+// Helper function to generate thumbnail via Python API if it doesn't exist
+async function getOrGenerateThumbnail(thumbnailsBase, modelsBase, category, objFilename) {
+  // First try to find existing thumbnail
+  let thumbnailUrl = findThumbnail(thumbnailsBase, category, objFilename);
+  
+  if (thumbnailUrl) {
+    return thumbnailUrl;
+  }
+  
+  // No existing thumbnail - try to generate one via Python API
+  const modelPath = path.join(modelsBase, category, objFilename);
+  const baseName = objFilename.replace(/\.obj$/i, '');
+  const categoryThumbDir = path.join(thumbnailsBase, category);
+  const outputPath = path.join(categoryThumbDir, `${baseName}.png`);
+  
+  try {
+    // Ensure category thumbnail directory exists
+    if (!fs.existsSync(categoryThumbDir)) {
+      fs.mkdirSync(categoryThumbDir, { recursive: true });
+    }
+    
+    // Call Python API to generate thumbnail
+    const response = await fetch(`${PYTHON_API_URL}/3d/thumbnail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_path: modelPath,
+        output_path: outputPath,
+        azimuth: 45.0,
+        elevation: 30.0
+      }),
+      timeout: 30000
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      if (result.success) {
+        return `/3d-thumbnails/${encodeURIComponent(category)}/${encodeURIComponent(baseName + '.png')}`;
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to generate thumbnail for ${category}/${objFilename}:`, error.message);
+  }
+  
+  return null;
+}
+
 // Serve 3D model files and thumbnails
 app.use('/3d-models', express.static(MODELS_3D_PATH, staticOptions));
 app.use('/3d-thumbnails', express.static(THUMBNAILS_3D_PATH, staticOptions));
@@ -601,6 +648,32 @@ app.get('/api/3d/models', async (req, res) => {
   }
 });
 
+// Generate missing thumbnails for 3D models
+app.post('/api/3d/generate-thumbnails', async (req, res) => {
+  try {
+    const { category } = req.body;
+    
+    // Call Python API to generate missing thumbnails
+    const response = await fetch(`${PYTHON_API_URL}/3d/generate-missing-thumbnails`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category }),
+      timeout: 300000 // 5 minutes timeout for bulk generation
+    });
+    
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to generate thumbnails: ${error}`);
+    }
+    
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('Generate thumbnails error:', error);
+    res.status(500).json({ error: error.message || 'Failed to generate thumbnails' });
+  }
+});
+
 // Get single 3D model by ID or path
 app.get('/api/3d/models/:id', async (req, res) => {
   try {
@@ -675,16 +748,16 @@ app.post('/api/3d/search', upload3D.single('model'), async (req, res) => {
       
       const result = await response.json();
       
-      // Enhance results with URLs - find thumbnails dynamically
+      // Enhance results with URLs - find or generate thumbnails dynamically
       if (result.results) {
-        result.results = result.results.map(r => {
-          // Try thumbnail from Python API first, then search filesystem
+        result.results = await Promise.all(result.results.map(async r => {
+          // Try thumbnail from Python API first, then search filesystem, then generate
           let thumbnailUrl = null;
           if (r.thumbnail) {
             thumbnailUrl = `/3d-thumbnails/${encodeURIComponent(r.category)}/${encodeURIComponent(path.basename(r.thumbnail))}`;
           } else {
-            // Try to find thumbnail on filesystem
-            thumbnailUrl = findThumbnail(THUMBNAILS_3D_PATH, r.category, r.filename);
+            // Try to find or generate thumbnail
+            thumbnailUrl = await getOrGenerateThumbnail(THUMBNAILS_3D_PATH, MODELS_3D_PATH, r.category, r.filename);
           }
           
           return {
@@ -692,7 +765,7 @@ app.post('/api/3d/search', upload3D.single('model'), async (req, res) => {
             modelUrl: `/3d-models/${encodeURIComponent(r.category)}/${encodeURIComponent(r.filename)}`,
             thumbnailUrl
           };
-        });
+        }));
       }
       
       return res.json(result);
@@ -723,14 +796,14 @@ app.post('/api/3d/search', upload3D.single('model'), async (req, res) => {
     
     const result = await response.json();
     
-    // Enhance results with URLs - find thumbnails dynamically
+    // Enhance results with URLs - find or generate thumbnails dynamically
     if (result.results) {
-      result.results = result.results.map(r => {
+      result.results = await Promise.all(result.results.map(async r => {
         let thumbnailUrl = null;
         if (r.thumbnail) {
           thumbnailUrl = `/3d-thumbnails/${encodeURIComponent(r.category)}/${encodeURIComponent(path.basename(r.thumbnail))}`;
         } else {
-          thumbnailUrl = findThumbnail(THUMBNAILS_3D_PATH, r.category, r.filename);
+          thumbnailUrl = await getOrGenerateThumbnail(THUMBNAILS_3D_PATH, MODELS_3D_PATH, r.category, r.filename);
         }
         
         return {
@@ -738,7 +811,7 @@ app.post('/api/3d/search', upload3D.single('model'), async (req, res) => {
           modelUrl: `/3d-models/${encodeURIComponent(r.category)}/${encodeURIComponent(r.filename)}`,
           thumbnailUrl
         };
-      });
+      }));
     }
     
     res.json(result);

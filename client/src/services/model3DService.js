@@ -304,6 +304,19 @@ export const model3DService = {
   },
 
   /**
+   * Generate missing thumbnails for 3D models
+   * @param {string} category - Optional category filter
+   */
+  async generateThumbnails(category = null) {
+    try {
+      return await apiClient.post('/3d/generate-thumbnails', { category });
+    } catch (error) {
+      console.error('Failed to generate thumbnails:', error);
+      throw error;
+    }
+  },
+
+  /**
    * Build full URL for model file
    * @param {string} modelUrl - Relative model URL
    */

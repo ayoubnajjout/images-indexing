@@ -198,6 +198,7 @@ const Search3DPage = () => {
   // Progress tracking
   const [indexingProgress, setIndexingProgress] = useState(null);
   const [showDescriptorInfo, setShowDescriptorInfo] = useState(false);
+  const [generatingThumbnails, setGeneratingThumbnails] = useState(false);
 
   // ============================================================================
   // Data Loading
@@ -454,6 +455,34 @@ const Search3DPage = () => {
     }
   };
 
+  const handleGenerateThumbnails = async () => {
+    if (!confirm('Generate missing thumbnails for all 3D models? This may take a while.')) return;
+    
+    setGeneratingThumbnails(true);
+    setError(null);
+    
+    try {
+      const response = await model3DService.generateThumbnails(selectedCategory || null);
+      
+      if (response.success) {
+        const msg = `Thumbnail Generation Complete!\n\n` +
+          `Generated: ${response.generated}\n` +
+          `Skipped (already exist): ${response.skipped}\n` +
+          `Failed: ${response.failed}`;
+        alert(msg);
+        
+        // Reload models to show new thumbnails
+        loadModels();
+      } else {
+        setError('Thumbnail generation failed');
+      }
+    } catch (err) {
+      setError('Thumbnail generation failed: ' + err.message);
+    } finally {
+      setGeneratingThumbnails(false);
+    }
+  };
+
   // ============================================================================
   // Render
   // ============================================================================
@@ -496,6 +525,27 @@ const Search3DPage = () => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                   </svg>
                   Index All
+                </>
+              )}
+            </button>
+            
+            <button
+              onClick={handleGenerateThumbnails}
+              disabled={generatingThumbnails || indexing}
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 font-medium text-sm flex items-center gap-2"
+              title="Generate 2D preview images for models without thumbnails"
+            >
+              {generatingThumbnails ? (
+                <>
+                  <Spinner size="sm" className="border-white" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  Gen Thumbnails
                 </>
               )}
             </button>
