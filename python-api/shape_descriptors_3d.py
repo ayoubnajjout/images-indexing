@@ -1,16 +1,38 @@
 """
 3D Shape Descriptors Module using OpenGL for Multi-View Rendering
 
-This module implements Global Feature-based similarity descriptors for 3D models:
-1. D1 - Distance between a fixed point and a random point on the surface
-2. D2 - Distance between two random points on the surface  
-3. D3 - Square root of area of triangle formed by 3 random points
-4. D4 - Cube root of volume of tetrahedron formed by 4 random points
-5. A3 - Angle between 3 random points on the surface
-6. Multi-view 2D projections using OpenGL rendering
+This module implements content-based 3D shape retrieval methods as described in:
+"A survey of content based 3D shape retrieval methods" by Tangelder & Veltkamp
 
-Based on: "Shape Distributions" by Osada et al. and
-"A search engine for 3D models" by Funkhouser et al.
+=== GLOBAL FEATURES BASED SIMILARITY (Section 3.1.1) ===
+Global features characterize the global shape of a 3D model:
+- Volume, surface area, volume-to-surface ratio
+- Statistical moments (moment invariants)
+- Bounding box features and aspect ratios
+- Convex-hull based indices:
+  * Hull crumpliness: ratio of object surface area to convex hull surface area
+  * Hull packing: percentage of convex hull volume not occupied by object
+  * Hull compactness: ratio of cubed hull surface area to squared hull volume
+
+=== GLOBAL FEATURE DISTRIBUTION BASED SIMILARITY (Section 3.1.2) ===
+Shape distributions measuring properties from random surface points:
+- D1: Distance from centroid to random surface point
+- D2: Distance between pairs of random surface points (most discriminative)
+- D3: Square root of area of triangle from 3 random points
+- D4: Cube root of volume of tetrahedron from 4 random points  
+- A3: Angle between 3 random surface points
+
+=== VIEW BASED SIMILARITY (Section 3.3.1) ===
+Multi-view 2D projections using OpenGL rendering with:
+- Silhouette-based descriptors
+- Fourier descriptors of contours
+- Histogram-based view features
+
+References:
+- Tangelder & Veltkamp, "A survey of content based 3D shape retrieval methods"
+- Osada et al., "Shape Distributions"
+- Corney et al., convex-hull based indices
+- Funkhouser et al., "A search engine for 3D models"
 """
 
 import numpy as np
@@ -173,6 +195,57 @@ class OBJLoader:
                 total_area += area
         
         return total_area
+    
+    def compute_volume(self) -> float:
+        """
+        Compute the volume of the mesh using the divergence theorem.
+        Works for watertight meshes; approximate for non-watertight.
+        """
+        if len(self.faces) == 0:
+            return 0.0
+        
+        volume = 0.0
+        for face in self.faces:
+            v0 = self.vertices[face[0]]
+            v1 = self.vertices[face[1]]
+            v2 = self.vertices[face[2]]
+            
+            # Signed volume of tetrahedron with origin
+            volume += np.dot(v0, np.cross(v1, v2)) / 6.0
+        
+        return abs(volume)
+    
+    def compute_convex_hull(self) -> Tuple[np.ndarray, np.ndarray, float, float]:
+        """
+        Compute the convex hull of the mesh vertices.
+        
+        Returns:
+            hull_vertices: Vertices of the convex hull
+            hull_faces: Faces (triangles) of the convex hull
+            hull_volume: Volume of the convex hull
+            hull_surface_area: Surface area of the convex hull
+        """
+        try:
+            from scipy.spatial import ConvexHull
+            
+            if len(self.vertices) < 4:
+                return np.array([]), np.array([]), 0.0, 0.0
+            
+            hull = ConvexHull(self.vertices)
+            
+            hull_vertices = self.vertices[hull.vertices]
+            hull_faces = hull.simplices
+            hull_volume = hull.volume
+            hull_surface_area = hull.area
+            
+            return hull_vertices, hull_faces, hull_volume, hull_surface_area
+            
+        except ImportError:
+            print("Warning: scipy not available. Convex hull computation disabled.")
+            return np.array([]), np.array([]), 0.0, 0.0
+        except Exception as e:
+            print(f"Warning: Could not compute convex hull: {e}")
+            return np.array([]), np.array([]), 0.0, 0.0
     
     def sample_points_on_surface(self, num_points: int) -> np.ndarray:
         """Sample random points on the mesh surface using area-weighted sampling"""
@@ -746,10 +819,120 @@ class MultiViewDescriptor:
         }
 
 
+class ConvexHullDescriptors:
+    """
+    Compute convex-hull based shape descriptors (Global Features - Section 3.1.1)
+    
+    Based on Corney et al.'s convex-hull based indices:
+    - Hull crumpliness: ratio of object surface area to convex hull surface area
+    - Hull packing: percentage of convex hull volume not occupied by object
+    - Hull compactness: ratio of cubed hull surface area to squared hull volume
+    
+    These descriptors characterize how much the object differs from its convex hull,
+    capturing concavities and overall shape complexity.
+    """
+    
+    @staticmethod
+    def compute_hull_descriptors(obj: OBJLoader) -> np.ndarray:
+        """
+        Compute all convex hull based descriptors.
+        
+        Returns:
+            Array of 6 features:
+            - hull_crumpliness: object_area / hull_area (>= 1, higher = more complex)
+            - hull_packing: 1 - (object_volume / hull_volume) (0-1, higher = more concave)
+            - hull_compactness: hull_area^3 / hull_volume^2 (shape measure)
+            - volume_ratio: object_volume / hull_volume (0-1, 1 = convex)
+            - area_ratio: object_area / hull_area (normalized)
+            - sphericity: how spherical the convex hull is
+        """
+        features = np.zeros(6, dtype=np.float32)
+        
+        # Get object surface area and volume
+        object_area = obj.get_surface_area()
+        object_volume = obj.compute_volume()
+        
+        # Get convex hull properties
+        _, _, hull_volume, hull_area = obj.compute_convex_hull()
+        
+        if hull_area <= 1e-10 or hull_volume <= 1e-10:
+            return features
+        
+        # 1. Hull crumpliness: ratio of object surface area to hull surface area
+        # Values >= 1, with 1 meaning the object is convex
+        # Higher values indicate more surface complexity/concavities
+        hull_crumpliness = object_area / hull_area
+        features[0] = min(hull_crumpliness, 10.0)  # Cap for normalization
+        
+        # 2. Hull packing: percentage of hull volume NOT occupied by object
+        # Values 0-1, with 0 meaning the object fills the hull completely (convex)
+        # Higher values indicate more concavities
+        volume_ratio = object_volume / hull_volume
+        hull_packing = 1.0 - min(volume_ratio, 1.0)
+        features[1] = hull_packing
+        
+        # 3. Hull compactness: ratio of cubed hull area to squared hull volume
+        # This is a shape measure independent of scale
+        # For a sphere: (4*pi*r^2)^3 / ((4/3)*pi*r^3)^2 = 36*pi
+        # Lower values indicate more compact shapes
+        hull_compactness = (hull_area ** 3) / (hull_volume ** 2)
+        # Normalize relative to sphere (36*pi ≈ 113.1)
+        features[2] = hull_compactness / (36 * np.pi)
+        
+        # 4. Volume ratio (inverse of hull packing, direct measure)
+        features[3] = min(volume_ratio, 1.0)
+        
+        # 5. Area ratio (normalized crumpliness)
+        features[4] = 1.0 / hull_crumpliness if hull_crumpliness > 0 else 0.0
+        
+        # 6. Sphericity of convex hull: how close to a sphere
+        # Sphericity = (pi^(1/3) * (6*V)^(2/3)) / A
+        # For a perfect sphere, sphericity = 1
+        sphericity = (np.pi ** (1/3)) * ((6 * hull_volume) ** (2/3)) / hull_area
+        features[5] = min(sphericity, 1.0)
+        
+        return features
+    
+    @staticmethod
+    def compute_volume_surface_features(obj: OBJLoader) -> np.ndarray:
+        """
+        Compute volume and surface based global features.
+        
+        Returns:
+            Array of features:
+            - volume: estimated volume of the mesh
+            - surface_area: total surface area
+            - volume_surface_ratio: V/A ratio (compactness measure)
+            - isoperimetric_quotient: 36*pi*V^2/A^3 (1 for sphere)
+        """
+        features = np.zeros(4, dtype=np.float32)
+        
+        surface_area = obj.get_surface_area()
+        volume = obj.compute_volume()
+        
+        features[0] = volume
+        features[1] = surface_area
+        
+        # Volume to surface ratio (compact shapes have higher ratio)
+        if surface_area > 1e-10:
+            features[2] = volume / surface_area
+        
+        # Isoperimetric quotient: measures how spherical the shape is
+        # IQ = 36*pi*V^2 / A^3, equals 1 for a sphere
+        if surface_area > 1e-10:
+            iq = (36 * np.pi * volume ** 2) / (surface_area ** 3)
+            features[3] = min(iq, 1.0)
+        
+        return features
+
+
 class GeometricDescriptors:
     """
-    Compute geometric global descriptors for 3D models
-    These capture overall geometric properties of the shape
+    Compute geometric global descriptors for 3D models (Global Features - Section 3.1.1)
+    These capture overall geometric properties of the shape including:
+    - Bounding box features and aspect ratios
+    - Statistical moments (3D moment invariants)
+    - Mesh statistics
     """
     
     @staticmethod
@@ -887,15 +1070,20 @@ class Shape3DDescriptorExtractor:
             print(f"Failed to load OBJ file: {obj_path}")
             return None
         
-        # Extract shape distribution descriptors
+        # Extract shape distribution descriptors (Global Feature Distribution - Section 3.1.2)
         shape_dist_desc = self.shape_dist.compute_all(obj)
         
-        # Extract geometric descriptors
+        # Extract geometric descriptors (Global Features - Section 3.1.1)
         bbox_features = GeometricDescriptors.compute_bounding_box_features(obj)
         moment_features = GeometricDescriptors.compute_moment_descriptors(obj)
         mesh_stats = GeometricDescriptors.compute_mesh_statistics(obj)
         
-        # Extract multi-view descriptors if OpenGL is available
+        # Extract convex hull descriptors (Global Features - Section 3.1.1)
+        # Hull crumpliness, hull packing, hull compactness (Corney et al.)
+        hull_features = ConvexHullDescriptors.compute_hull_descriptors(obj)
+        volume_surface_features = ConvexHullDescriptors.compute_volume_surface_features(obj)
+        
+        # Extract multi-view descriptors if OpenGL is available (View-based - Section 3.3.1)
         if self.use_opengl and self.multiview:
             multiview_desc = self.multiview.compute(obj)
         else:
@@ -914,7 +1102,9 @@ class Shape3DDescriptorExtractor:
             shape_dist_desc['a3'],
             bbox_features,
             moment_features,
-            mesh_stats
+            mesh_stats,
+            hull_features,
+            volume_surface_features
         ])
         
         # Create result dictionary
@@ -924,17 +1114,23 @@ class Shape3DDescriptorExtractor:
             'num_vertices': len(obj.vertices),
             'num_faces': len(obj.faces),
             'surface_area': float(obj.get_surface_area()),
+            'volume': float(obj.compute_volume()),
             
             # Individual descriptors (for flexible similarity computation)
             'descriptors': {
+                # Global Feature Distribution descriptors (Section 3.1.2)
                 'd1': shape_dist_desc['d1'].tolist(),
                 'd2': shape_dist_desc['d2'].tolist(),
                 'd3': shape_dist_desc['d3'].tolist(),
                 'd4': shape_dist_desc['d4'].tolist(),
                 'a3': shape_dist_desc['a3'].tolist(),
+                # Global Features descriptors (Section 3.1.1)
                 'bbox': bbox_features.tolist(),
                 'moments': moment_features.tolist(),
                 'mesh_stats': mesh_stats.tolist(),
+                'hull_features': hull_features.tolist(),  # Convex hull based indices
+                'volume_surface': volume_surface_features.tolist(),
+                # View-based descriptors (Section 3.3.1)
                 'multiview_histogram': multiview_desc['multiview_histogram'].tolist(),
                 'multiview_silhouette': multiview_desc['multiview_silhouette'].tolist(),
                 'multiview_fourier': multiview_desc['multiview_fourier'].tolist()
@@ -956,6 +1152,11 @@ def compute_similarity(desc1: Dict, desc2: Dict, weights: Dict = None) -> float:
     """
     Compute similarity between two 3D models based on their descriptors
     
+    Weights are distributed across three categories from the survey paper:
+    - Global Feature Distribution (Section 3.1.2): D1, D2, D3, D4, A3
+    - Global Features (Section 3.1.1): bbox, moments, mesh_stats, hull_features, volume_surface
+    - View-based (Section 3.3.1): multiview descriptors
+    
     Args:
         desc1: Descriptor dictionary for first model
         desc2: Descriptor dictionary for second model
@@ -966,17 +1167,22 @@ def compute_similarity(desc1: Dict, desc2: Dict, weights: Dict = None) -> float:
     """
     if weights is None:
         weights = {
-            'd1': 0.1,
-            'd2': 0.25,  # D2 is most discriminative
-            'd3': 0.15,
-            'd4': 0.1,
-            'a3': 0.15,
+            # Global Feature Distribution descriptors (Section 3.1.2) - 50% weight
+            'd1': 0.05,
+            'd2': 0.20,  # D2 is most discriminative according to Osada et al.
+            'd3': 0.10,
+            'd4': 0.05,
+            'a3': 0.10,
+            # Global Features descriptors (Section 3.1.1) - 35% weight
             'bbox': 0.05,
-            'moments': 0.1,
-            'mesh_stats': 0.05,
-            'multiview_histogram': 0.025,
-            'multiview_silhouette': 0.025,
-            'multiview_fourier': 0.0
+            'moments': 0.08,
+            'mesh_stats': 0.02,
+            'hull_features': 0.12,  # Convex hull indices (Corney et al.)
+            'volume_surface': 0.08,  # Volume/surface based features
+            # View-based descriptors (Section 3.3.1) - 15% weight
+            'multiview_histogram': 0.05,
+            'multiview_silhouette': 0.07,
+            'multiview_fourier': 0.03
         }
     
     total_similarity = 0.0
@@ -1054,6 +1260,7 @@ if __name__ == "__main__":
     obj_path = sys.argv[1]
     
     print(f"Extracting descriptors from: {obj_path}")
+    print("=" * 60)
     
     extractor = Shape3DDescriptorExtractor(use_opengl=True)
     
@@ -1065,9 +1272,25 @@ if __name__ == "__main__":
             print(f"Vertices: {result['num_vertices']}")
             print(f"Faces: {result['num_faces']}")
             print(f"Surface Area: {result['surface_area']:.4f}")
-            print(f"\nDescriptor sizes:")
-            for name, desc in result['descriptors'].items():
+            print(f"Volume: {result['volume']:.4f}")
+            
+            print(f"\n--- Descriptor Categories (from Survey Paper) ---")
+            
+            print(f"\n[Global Feature Distribution - Section 3.1.2]")
+            for name in ['d1', 'd2', 'd3', 'd4', 'a3']:
+                desc = result['descriptors'].get(name, [])
                 print(f"  {name}: {len(desc)} values")
+            
+            print(f"\n[Global Features - Section 3.1.1]")
+            for name in ['bbox', 'moments', 'mesh_stats', 'hull_features', 'volume_surface']:
+                desc = result['descriptors'].get(name, [])
+                print(f"  {name}: {len(desc)} values")
+            
+            print(f"\n[View-based - Section 3.3.1]")
+            for name in ['multiview_histogram', 'multiview_silhouette', 'multiview_fourier']:
+                desc = result['descriptors'].get(name, [])
+                print(f"  {name}: {len(desc)} values")
+            
             print(f"\nCombined descriptor: {len(result['combined_descriptor'])} values")
         else:
             print("Failed to extract descriptors")
